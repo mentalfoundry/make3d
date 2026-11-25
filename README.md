@@ -147,6 +147,38 @@ Download the models once with `./setup.sh --video` (~26 GB in `models/ltx2/`).
 - Uses `SD_CLI` if set, else Lemonade's `/var/cache/lemonade/bin/sd-cpp/vulkan/sd-cli`
   (install Lemonade's `sd-cpp:vulkan` backend), else `sd-cli` on PATH.
 
+## Long videos from a storyboard: `storyboard`
+
+```sh
+storyboard new knight-dragon "a knight fights a dragon on a cliff at sunset" --seconds 30
+storyboard frames knight-dragon --only 3,4      # redraw keyframes you don't like
+storyboard render knight-dragon --draft          # quick low-res pass to check the motion
+storyboard render knight-dragon --music "epic orchestral battle music, drums, brass"
+```
+
+1. **new:** the chat model (Qwen) writes a shot list with a keyframe every `--every` seconds
+   (default 5) plus one fixed description of the characters, setting and style. Flux draws
+   keyframe 0 from text, then every later keyframe using keyframe 0 as a reference for
+   appearance only, so the characters stay the same while poses and camera change.
+   Check `storyboard.png`; edit `storyboard.json` (any keyframe, action or sound text) and
+   redraw with `frames`.
+2. **render:** each segment is rendered by LTX-2.3 from its start keyframe to its end keyframe,
+   with that segment's action and sound text, then all segments are joined into one video.
+   `--music` adds an ACE-Step music bed under the scene sound (`--music-db`, default 14 dB below).
+   Unchanged segments are reused, so after editing one keyframe only its two segments re-render;
+   `--only 2` re-renders segment 2 with a new seed.
+
+Output in `out/story/<name>/`: `key-NN.png`, `storyboard.png`, `<name>-full.webm/.ogv`
+(or `-draft`). Time on the development laptop: keyframes ~1 min each; segments ~2.7 min each
+as drafts (480x320) and ~6 min at full quality (768x512), so 30 s ≈ 16 min draft, ≈ 36 min full.
+
+What works and what doesn't:
+- **Segments only move as much as the keyframes differ.** Two nearly identical keyframes
+  give a nearly frozen segment. Make each keyframe a clearly different moment.
+- LTX tends to hold near each keyframe and move in the middle, so motion can feel like
+  bursts between poses. Big camera changes between keyframes become fast sweeps.
+- Each segment's sound is generated separately; a music bed (`--music`) hides the joins.
+
 ## Music and sound effects: `makesound`
 
 ```sh
@@ -198,6 +230,7 @@ single bone. Check `<name>-joints.png` and pose it in Blender before relying on 
 | `make3d.py` | system Python | The whole chain (the `make3d` command) |
 | `art3d.py` | system Python | Your art → posed concept → `make3d` (the `art3d` command) |
 | `makevideo.py` | system Python | Prompt/image → video with sound via `sd-cli` (the `makevideo` command) |
+| `storyboard.py` | system Python | Idea → shot list → keyframes → stitched long video (the `storyboard` command) |
 | `makesound.py` | system Python | Music and sound effects via Lemonade (the `makesound` command) |
 | `lemon.py` | system Python | Calls Lemonade: Flux generate/edit, TRELLIS |
 | `img2glb.py` | system Python | Just image → raw .glb |

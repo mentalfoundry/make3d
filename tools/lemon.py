@@ -170,3 +170,21 @@ def generate_audio(prompt, model, duration=None, seed=42, lyrics=None, language=
     if not b64:
         raise RuntimeError(f"audio/generations: unexpected response: {str(j)[:300]}")
     return base64.b64decode(b64)
+
+
+def chat(prompt, max_tokens=4000, temperature=0.7):
+    """Ask the chat model a text question. Returns its text answer (thinking disabled)."""
+    body = json.dumps({"model": CHAT_MODEL, "max_tokens": max_tokens, "temperature": temperature,
+                       "chat_template_kwargs": {"enable_thinking": False},
+                       "messages": [{"role": "user", "content": prompt}]}).encode()
+    resp = json.loads(_post("chat/completions", body, "application/json", timeout=900))
+    return resp["choices"][0]["message"]["content"].strip()
+
+
+def chat_json(prompt, **kw):
+    """chat() that expects a JSON object back."""
+    txt = chat(prompt, **kw)
+    try:
+        return json.loads(txt[txt.index("{"):txt.rindex("}") + 1])
+    except ValueError:
+        raise RuntimeError(f"the chat model didn't return valid JSON: {txt[:500]}") from None

@@ -91,7 +91,8 @@ ln -sfn "$ROOT/bin/make3d" "$HOME/.local/bin/make3d"
 ln -sfn "$ROOT/bin/art3d" "$HOME/.local/bin/art3d"
 ln -sfn "$ROOT/bin/makevideo" "$HOME/.local/bin/makevideo"
 ln -sfn "$ROOT/bin/makesound" "$HOME/.local/bin/makesound"
-say "commands: make3d, art3d, makevideo, makesound -> ~/.local/bin"
+ln -sfn "$ROOT/bin/storyboard" "$HOME/.local/bin/storyboard"
+say "commands: make3d, art3d, makevideo, storyboard, makesound -> ~/.local/bin"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "  add ~/.local/bin to your PATH";; esac
 
 # 5. Lemonade check

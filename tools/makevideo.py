@@ -13,7 +13,7 @@ Examples:
 
 Output: ~/3d/out/video/<name>/: <name>.webm (VP8/Opus: browsers, Unity, VLC), <name>.ogv
 (Theora/Vorbis: Godot), <name>.mp4 (H.264/AAC: Unreal, phones, editors; needs an H.264
-encoder in ffmpeg), plus prompt.json with the settings and sd-cli.log.
+encoder in ffmpeg), plus prompt.json with the settings and the sd-cli log.
 """
 import argparse, json, os, re, shutil, subprocess, sys, time
 
@@ -125,6 +125,47 @@ def size_like(image, pixels):
     return f"{max(256, round(w * k / 32) * 32)}x{max(256, round(h * k / 32) * 32)}"
 
 
+def check_models():
+    missing = [f for f in FILES.values() if not os.path.exists(os.path.join(MODELS, f))]
+    if missing:
+        raise RuntimeError(f"missing model files in {MODELS}: {', '.join(missing)}. "
+                           "Download them with ./setup.sh --video (see README, 'Video').")
+
+
+def frames_for(seconds, fps):
+    """LTX wants 8k+1 frames."""
+    return max(9, round(seconds * fps / 8) * 8 + 1)
+
+
+def render(prompt, raw, W, H, frames, fps=24, steps=8, seed=42, image=None, end_image=None,
+           audio=True, negative=NEGATIVE):
+    """Run sd-cli once; writes `raw` (VP8 + PCM .webm) and returns seconds taken."""
+    check_models()
+    f = lambda k: os.path.join(MODELS, FILES[k])
+    cmd = [find_sd_cli(), "-M", "vid_gen",
+           "--diffusion-model", f("diffusion"), "--llm", f("llm"),
+           "--embeddings-connectors", f("connectors"), "--vae", f("vae"),
+           "-p", prompt, "-n", negative,
+           "--cfg-scale", "1", "--sampling-method", "euler", "--steps", str(steps),
+           "-W", str(W), "-H", str(H), "--video-frames", str(frames), "--fps", str(fps),
+           "--seed", str(seed), "--diffusion-fa", "--vae-tiling", "-o", raw]
+    if audio:
+        cmd += ["--audio-vae", f("audio_vae")]
+    if image:
+        cmd += ["--init-img", image]
+    if end_image:
+        cmd += ["--end-img", end_image]
+    make_room()
+    t = time.time()
+    log_path = os.path.splitext(raw)[0] + ".log"
+    with open(log_path, "w") as log:
+        r = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT)
+    if r.returncode != 0 or not os.path.exists(raw):
+        tail = open(log_path, errors="replace").read()[-2500:]
+        raise RuntimeError(f"sd-cli failed (exit {r.returncode}). Last lines of {log_path}:\n{tail}")
+    return time.time() - t
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("prompt", help="what happens, including the sounds you want to hear")
@@ -153,45 +194,16 @@ def main():
     if not m:
         ap.error("--size must look like 768x512")
     W, H = (int(v) // 32 * 32 for v in m.groups())
-    # LTX wants 8k+1 frames
-    frames = max(9, round(a.seconds * a.fps / 8) * 8 + 1)
-
-    missing = [f for f in FILES.values() if not os.path.exists(os.path.join(MODELS, f))]
-    if missing:
-        sys.exit(f"missing model files in {MODELS}: {', '.join(missing)}\n"
-                 "Download them with ./setup.sh --video (see README, 'Video').")
+    frames = frames_for(a.seconds, a.fps)
 
     name = a.name or re.sub(r"[^a-z0-9]+", "-", a.prompt.lower()).strip("-")[:40]
     out = os.path.join(ROOT, "out", "video", name)
     os.makedirs(out, exist_ok=True)
     raw = os.path.join(out, f"{name}-raw.webm")
-
-    f = lambda k: os.path.join(MODELS, FILES[k])
-    cmd = [find_sd_cli(), "-M", "vid_gen",
-           "--diffusion-model", f("diffusion"), "--llm", f("llm"),
-           "--embeddings-connectors", f("connectors"), "--vae", f("vae"),
-           "-p", a.prompt, "-n", a.negative,
-           "--cfg-scale", "1", "--sampling-method", "euler", "--steps", str(a.steps),
-           "-W", str(W), "-H", str(H), "--video-frames", str(frames), "--fps", str(a.fps),
-           "--seed", str(a.seed), "--diffusion-fa", "--vae-tiling", "-o", raw]
-    if not a.no_audio:
-        cmd += ["--audio-vae", f("audio_vae")]
-    if a.image:
-        cmd += ["--init-img", a.image]
-    if a.end_image:
-        cmd += ["--end-img", a.end_image]
-
     print(f"== video: {W}x{H}, {frames} frames ({frames / a.fps:.1f} s at {a.fps} fps), "
           f"{a.steps} steps, {'no audio' if a.no_audio else 'with audio'}")
-    make_room()
-    t = time.time()
-    log_path = os.path.join(out, "sd-cli.log")
-    with open(log_path, "w") as log:
-        r = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT)
-    if r.returncode != 0 or not os.path.exists(raw):
-        tail = open(log_path, errors="replace").read()[-2500:]
-        sys.exit(f"sd-cli failed (exit {r.returncode}). Last lines of {log_path}:\n{tail}")
-    secs = time.time() - t
+    secs = render(a.prompt, raw, W, H, frames, fps=a.fps, steps=a.steps, seed=a.seed,
+                  image=a.image, end_image=a.end_image, audio=not a.no_audio, negative=a.negative)
     print(f"  rendered in {secs / 60:.1f} min")
 
     has_audio = "audio" in subprocess.run(
