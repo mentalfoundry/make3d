@@ -172,9 +172,27 @@ Output in `out/story/<name>/`: `key-NN.png`, `storyboard.png`, `<name>-full.webm
 (or `-draft`). Time on the development laptop: keyframes ~1 min each; segments ~2.7 min each
 as drafts (480x320) and ~6 min at full quality (768x512), so 30 s ≈ 16 min draft, ≈ 36 min full.
 
+**Your own characters (`--refs`):** name them in angle brackets and point at a folder with
+an image per name. A/T-pose sheets from `make3d`/`art3d` (`out/<name>/concept.png`) work well.
+
+```sh
+ls ~/chars        # knight.png  dragon.png
+storyboard new duel "a <knight> fights a <dragon> in a ruined castle at dusk" --refs ~/chars
+```
+
+The vision model describes each image and those descriptions replace the invented ones in
+the plan and in every video prompt. Flux gets the character images as references for every
+keyframe (copy the look, not the standing pose or white background), plus keyframe 0 for
+the location. Images are copied into the storyboard's `refs/` folder. Keyframes take ~2 min
+each with references. Characters can occasionally swap features (in testing, the knight once
+got a dragon's head); redraw that keyframe with `frames --only N`.
+
 What works and what doesn't:
 - **Segments only move as much as the keyframes differ.** Two nearly identical keyframes
   give a nearly frozen segment. Make each keyframe a clearly different moment.
+- With `--refs`, later keyframes tend to keep keyframe 0's layout. If two keyframes come out
+  too similar, rewrite that keyframe's `image` text in `storyboard.json` as a clearly
+  different moment (another position, camera angle or distance) and redraw it.
 - LTX tends to hold near each keyframe and move in the middle, so motion can feel like
   bursts between poses. Big camera changes between keyframes become fast sweeps.
 - Each segment's sound is generated separately; a music bed (`--music`) hides the joins.

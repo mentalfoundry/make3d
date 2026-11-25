@@ -12,6 +12,7 @@
 
 Examples:
   storyboard new knight-dragon "a knight fights a dragon on a cliff at sunset" --seconds 30
+  storyboard new duel "a <knight> fights a <dragon> in a ruined castle" --refs ~/chars
   storyboard frames knight-dragon --only 3,4          # redraw keyframes 3 and 4 (new seed)
   storyboard render knight-dragon --draft             # quick low-res pass to check the motion
   storyboard render knight-dragon --music "epic orchestral battle music, drums, brass"
@@ -48,7 +49,7 @@ Rules:
 - the story must progress with a clear beginning, escalation and ending;
 - each keyframe must follow physically from the previous one {every} seconds earlier: no
   teleporting, keep the same characters, location and camera side throughout;
-- describe characters the same way every time; nothing on screen is text."""
+- describe characters the same way every time; nothing on screen is text.{fixed}"""
 
 
 def log(msg):
@@ -74,38 +75,88 @@ def frame_path(name, i):
     return os.path.join(story_dir(name), f"key-{i:02d}.png")
 
 
+DESCRIBE = ("Describe this character's appearance for an artist in two or three dense sentences: "
+            "species, build, skin or scale colour, face, hair, every piece of clothing and armour "
+            "with colours and materials, and distinguishing features. Ignore the pose, the "
+            "background and the art style. Reply with the description only.")
+
+
+def ref_paths(name, sb):
+    return [os.path.join(story_dir(name), r["image"]) for r in sb.get("refs", [])]
+
+
 def frame_prompt(sb, i):
-    """Keyframe 0 is drawn from text. Later keyframes use keyframe 0 as a reference for
-    appearance only: with the full previous frame as a reference, Flux copied its layout
-    and poses so the story never moved, and sometimes doubled characters."""
+    """Keyframe 0 is drawn from text (plus the character reference images, if any). Later
+    keyframes use keyframe 0 as a reference for appearance only: with the full previous
+    frame as a reference, Flux copied its layout and poses so the story never moved."""
     kf = sb["keyframes"][i]
+    refs = sb.get("refs", [])
     look = (f"Characters: {sb['characters']} Setting: {sb['setting']} Style: {sb['style']} "
             f"Cinematic film still, no text, no watermark, no borders.")
+    intro = ""
+    if refs:
+        which = ", ".join(f"image {k + 1} shows the {r['name']}" for k, r in enumerate(refs))
+        intro = (f"Reference images: {which}. They are character sheets: copy each character's "
+                 f"exact appearance, proportions, colours, costume and details from its sheet, but "
+                 f"NOT the sheet's neutral standing pose, framing or plain background. Never mix "
+                 f"features between characters: each keeps its own head, face, skin and body from "
+                 f"its own sheet. ")
+        if i > 0:
+            intro += (f"Image {len(refs) + 1} is an earlier shot of this scene: use it only for "
+                      f"the location, lighting and style. ")
     if i == 0:
-        return f"{kf['image']} {look}"
-    return (f"A new shot from the same film: {kf['image']} Use the reference image ONLY to know "
-            f"what the characters, location and lighting look like. Do NOT copy its composition: "
-            f"the camera angle, framing, distance, poses and positions must change to match this "
-            f"description. Each character appears exactly once. {look}")
+        return f"{intro}{kf['image']} {look}"
+    return (f"{intro}A new shot from the same film: {kf['image']} Do NOT copy the composition of "
+            f"any reference image: the camera angle, framing, distance, poses and positions must "
+            f"change to match this description. Each character appears exactly once. {look}")
 
 
 def draw_frames(name, sb, only=None, seed=None):
     seed = sb.get("seed", 42) if seed is None else seed
-    W, H = FRAME_SIZE.split("x")
+    refs = ref_paths(name, sb)
     for i in range(len(sb["keyframes"])):
         if only and i not in only:
             continue
         t = time.time()
         if i == 0:
-            png = lemon.generate_image(frame_prompt(sb, 0), size=FRAME_SIZE, seed=seed)[0]
+            if refs:
+                png = lemon.edit_image(frame_prompt(sb, 0), refs, size=FRAME_SIZE, seed=seed)[0]
+            else:
+                png = lemon.generate_image(frame_prompt(sb, 0), size=FRAME_SIZE, seed=seed)[0]
         else:
             if not os.path.exists(frame_path(name, 0)):
                 raise RuntimeError("keyframe 0 is needed first (it's the reference for the others)")
-            png = lemon.edit_image(frame_prompt(sb, i), [frame_path(name, 0)], size=FRAME_SIZE,
-                                   seed=seed + i)[0]
+            png = lemon.edit_image(frame_prompt(sb, i), refs + [frame_path(name, 0)],
+                                   size=FRAME_SIZE, seed=seed + i)[0]
         open(frame_path(name, i), "wb").write(png)
         print(f"  key-{i:02d}.png  t={sb['keyframes'][i]['t']}s  ({time.time() - t:.0f}s)")
     contact_sheet(name, sb)
+
+
+def load_refs(idea, folder, out):
+    """<name> placeholders in the idea -> character reference images from `folder`."""
+    names = list(dict.fromkeys(re.findall(r"<([\w-]+)>", idea)))
+    if not names:
+        raise RuntimeError("--refs needs placeholders in the idea, e.g. \"a <knight> fights a <dragon>\"")
+    files = {os.path.splitext(f)[0].lower(): f for f in os.listdir(folder)
+             if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))}
+    missing = [n for n in names if n.lower() not in files]
+    if missing:
+        raise RuntimeError(f"no image for {', '.join('<' + m + '>' for m in missing)} in {folder} "
+                           f"(found: {', '.join(sorted(files)) or 'no images'})")
+    unused = sorted(set(files) - {n.lower() for n in names})
+    if unused:
+        print(f"  not in the idea, ignored: {', '.join(unused)}")
+    os.makedirs(os.path.join(out, "refs"), exist_ok=True)
+    refs = []
+    for n in names:
+        src = os.path.join(folder, files[n.lower()])
+        rel = os.path.join("refs", f"{n}{os.path.splitext(src)[1].lower()}")
+        shutil.copy(src, os.path.join(out, rel))
+        desc = lemon.describe_image(src, DESCRIBE).strip()
+        print(f"  <{n}>: {desc}")
+        refs.append({"name": n, "image": rel, "description": desc})
+    return refs
 
 
 def contact_sheet(name, sb):
@@ -148,10 +199,21 @@ def cmd_new(a):
     os.makedirs(out, exist_ok=True)
     n = int(round(a.seconds / a.every))
     times = [i * a.every for i in range(n + 1)]
+    refs, idea, fixed = [], a.idea, ""
+    if a.refs:
+        log(f"characters: reading reference images in {a.refs}")
+        refs = load_refs(a.idea, a.refs, out)
+        idea = re.sub(r"<([\w-]+)>", r"the \1", a.idea)
+        fixed = ("\n- these characters are given and must not change; use these descriptions, "
+                 "and refer to each one by its name:\n" +
+                 "\n".join(f"  the {r['name']}: {r['description']}" for r in refs))
     log(f"plan: {n} segments of {a.every:g} s, keyframes at {', '.join(f'{t:g}' for t in times)} s")
-    sb = lemon.chat_json(PLAN.format(idea=a.idea, seconds=f"{n * a.every:g}", every=f"{a.every:g}",
+    sb = lemon.chat_json(PLAN.format(idea=idea, seconds=f"{n * a.every:g}", every=f"{a.every:g}",
                                      times=", ".join(f"{t:g}" for t in times),
-                                     n_frames=n + 1, n_segments=n))
+                                     n_frames=n + 1, n_segments=n, fixed=fixed))
+    if refs:
+        sb["refs"] = refs
+        sb["characters"] = " ".join(f"The {r['name']}: {r['description']}" for r in refs)
     if a.style:
         sb["style"] = a.style
     kfs, segs = sb.get("keyframes", []), sb.get("segments", [])
@@ -269,7 +331,10 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("new", help="plan the shots and draw the keyframes")
     p.add_argument("name")
-    p.add_argument("idea", help="what happens, e.g. 'a knight fights a dragon on a cliff at sunset'")
+    p.add_argument("idea", help="what happens, e.g. 'a knight fights a dragon on a cliff at sunset'; "
+                                "with --refs, name characters as <knight>, <dragon>")
+    p.add_argument("--refs", help="folder of character images (knight.png, dragon.png, ...) for the "
+                                  "<name> placeholders in the idea; A/T-pose sheets work well")
     p.add_argument("--seconds", type=float, default=30, help="total length (default 30)")
     p.add_argument("--every", type=float, default=5, help="seconds between keyframes (default 5)")
     p.add_argument("--style", help="override the visual style, e.g. 'hand-painted fantasy art, soft light'")
