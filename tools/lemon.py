@@ -136,15 +136,18 @@ CHAT_MODEL = os.environ.get("CHAT_MODEL", "Qwen3.6-35B-A3B-MTP-GGUF")
 
 
 def describe_image(image_path, question, max_tokens=800):
-    """Ask the vision chat model about an image. Returns its text answer."""
-    ctype = mimetypes.guess_type(image_path)[0] or "image/png"
-    with open(image_path, "rb") as f:
-        url = f"data:{ctype};base64,{base64.b64encode(f.read()).decode()}"
+    """Ask the vision chat model about an image (or a list of images, in order).
+    Returns its text answer."""
+    content = []
+    for path in ([image_path] if isinstance(image_path, str) else image_path):
+        ctype = mimetypes.guess_type(path)[0] or "image/png"
+        with open(path, "rb") as f:
+            url = f"data:{ctype};base64,{base64.b64encode(f.read()).decode()}"
+        content.append({"type": "image_url", "image_url": {"url": url}})
+    content.append({"type": "text", "text": question})
     body = json.dumps({"model": CHAT_MODEL, "max_tokens": max_tokens, "temperature": 0.2,
                        "chat_template_kwargs": {"enable_thinking": False},
-                       "messages": [{"role": "user", "content": [
-                           {"type": "image_url", "image_url": {"url": url}},
-                           {"type": "text", "text": question}]}]}).encode()
+                       "messages": [{"role": "user", "content": content}]}).encode()
     resp = json.loads(_post("chat/completions", body, "application/json", timeout=600))
     return resp["choices"][0]["message"]["content"].strip()
 

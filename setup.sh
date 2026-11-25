@@ -83,6 +83,23 @@ if [ "${1:-}" = "--video" ]; then
         say "video model: $1"
         curl -fL -C - --retry 5 --progress-bar -o "$V/$1.part" "$2/$1" && mv "$V/$1.part" "$V/$1"
     done
+
+    # stable-diffusion.cpp with DGL scripting (storyboard's continuous mode). Lemonade's
+    # bundled sd-cli is older. Pinned build + checksum; tested on Strix Halo (RADV).
+    SD_TAG=master-1122-3b12781
+    SD_ZIP=sd-master-3b12781-bin-Linux-Ubuntu-26.04-x86_64-vulkan.zip
+    SD_SHA=3dc9fe15167891535991f799d7db40017771e47f047b3dff4fe92238d7ff8b34
+    SD_DIR="$APPS/sd-cpp-$SD_TAG"
+    if [ ! -x "$SD_DIR/sd-cli" ]; then
+        say "stable-diffusion.cpp $SD_TAG (DGL) -> $SD_DIR"
+        mkdir -p "$SD_DIR"
+        curl -fL --retry 5 --progress-bar -o "$SD_DIR/$SD_ZIP" \
+            "https://github.com/leejet/stable-diffusion.cpp/releases/download/$SD_TAG/$SD_ZIP"
+        echo "$SD_SHA  $SD_DIR/$SD_ZIP" | sha256sum -c -
+        python3 -I -m zipfile -e "$SD_DIR/$SD_ZIP" "$SD_DIR"
+        rm -f -- "${SD_DIR:?}/${SD_ZIP:?}"
+        chmod +x "$SD_DIR/sd-cli" "$SD_DIR/sd-server"
+    fi
 fi
 
 # 4. Commands

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Storyboard -> keyframes every N seconds -> long video stitched from LTX segments.
 
-  1. new:     the chat model writes a shot list (one keyframe every --every seconds) with
-              one fixed description of the characters and setting. Flux draws keyframe 0,
-              then every other keyframe using keyframe 0 as its reference so the characters
-              stay consistent. Makes a contact sheet and stops so you can check them.
+  1. new:     the chat model writes a shot list (one keyframe every --every seconds, each
+              caught mid-movement) with one fixed description of the characters and
+              setting. Flux draws keyframe 0, then the others using keyframe 0 as an
+              appearance reference. The vision model checks each new keyframe against the
+              previous one (moved enough? characters fused or doubled?) and redraws weak
+              ones. Makes a contact sheet and stops so you can check them.
   2. frames:  redraw some or all keyframes, after editing storyboard.json or for a new take.
-  3. render:  each segment is rendered by LTX-2.3 from its start keyframe to its end
-              keyframe, with action and sound prompts; the segments are joined into one
-              video, optionally with a music bed (ACE-Step).
+  3. render:  continuous by default: segment 0 runs keyframe 0 -> 1, every later segment
+              continues the previous one's last frames and is guided to its next keyframe
+              (needs a DGL-capable sd-cli, see ltx_dgl.py); --classic pins each segment
+              to both keyframes. Segments are cross-faded together, optionally with a
+              music bed (ACE-Step).
 
 Examples:
   storyboard new knight-dragon "a knight fights a dragon on a cliff at sunset" --seconds 30
@@ -28,6 +32,7 @@ ROOT = os.path.dirname(TOOLS)
 sys.path.insert(0, TOOLS)
 import lemon  # noqa: E402
 import makevideo  # noqa: E402
+import ltx_dgl  # noqa: E402
 
 FRAME_SIZE = "1152x768"   # Flux keyframes (3:2); video is rendered at the same shape
 PLAN = """You are a film storyboard artist. Plan a short continuous video of this idea:
@@ -41,14 +46,21 @@ Reply with JSON only, no other text, in exactly this shape:
  "style": "one sentence: visual style, lighting, colour palette, camera lens (same for every frame)",
  "characters": "fixed, detailed visual description of every character: species, build, colours, clothing, armour, distinguishing features. Written once, used for every frame, so be specific.",
  "setting": "fixed description of the location, time of day and weather",
- "keyframes": [{{"t": 0, "image": "what this exact moment shows: where each character is, their pose and action, camera angle and framing"}}],
- "segments": [{{"from": 0, "to": {every}, "action": "the motion that happens between these two keyframes, as one continuous shot", "sound": "what we hear: effects, voices, ambience"}}]
+ "keyframes": [{{"t": 0, "image": "this exact moment, caught MID-MOVEMENT: where each character is, their pose part-way through an action (mid-swing, mid-leap, wings mid-beat, cape and dust flying), camera angle and distance", "change": "what is visibly different from the previous keyframe (empty for the first)"}}],
+ "segments": [{{"from": 0, "to": {every}, "action": "the motion between these two keyframes as one continuous shot, already in motion at the start and still moving at the end", "sound": "what we hear: effects, voices, ambience"}}]
 }}
 Rules:
 - exactly {n_frames} keyframes and {n_segments} segments, in order;
 - the story must progress with a clear beginning, escalation and ending;
 - each keyframe must follow physically from the previous one {every} seconds earlier: no
   teleporting, keep the same characters, location and camera side throughout;
+- every keyframe must differ clearly from the previous one in AT LEAST TWO of: where the
+  characters are, their poses, and the camera angle or distance. Never repeat a pose;
+- catch every keyframe in the middle of a movement, never a still or resting pose
+  (not "stands", "holds", "waits", "poses"); a video model animates between keyframes and
+  lingers on frames that look static;
+- segment actions describe continuous motion that is already happening when the segment
+  starts and carries on past its end; keep the camera moving smoothly too;
 - describe characters the same way every time; nothing on screen is text.{fixed}"""
 
 
@@ -111,25 +123,79 @@ def frame_prompt(sb, i):
             f"change to match this description. Each character appears exactly once. {look}")
 
 
-def draw_frames(name, sb, only=None, seed=None):
-    seed = sb.get("seed", 42) if seed is None else seed
+CHECK = """Image 1 is a film keyframe. Image 2 is the next keyframe, {every} seconds later.
+Image 2 was supposed to show: "{image}"
+Reply with JSON only:
+{{"moved": 0-10, "matches": 0-10, "severe": "..."}}
+moved: how much changed between image 1 and image 2 in the characters' positions, their poses
+  and the camera angle or distance (0 = the same picture, 3 = small pose change, 6 = clearly
+  different moment, 10 = completely different shot).
+matches: how well image 2 shows what it was supposed to show.
+severe: ONLY these defects in image 2, otherwise "": two characters fused into one body or
+  sharing a head; one character with another character's head; a character appearing twice;
+  a character missing entirely. Ignore small anatomy, prop or detail mistakes."""
+
+MIN_MOVED = 5
+
+
+def check_frame(name, sb, i):
+    """Score keyframe i against keyframe i-1 with the vision model. Returns (score, note, ok).
+    Passes when it moved enough and has no severe defect; `matches` only ranks attempts."""
+    kf = sb["keyframes"][i]
+    try:
+        txt = lemon.describe_image([frame_path(name, i - 1), frame_path(name, i)],
+                                   CHECK.format(every=f"{sb['every']:g}", image=kf["image"]),
+                                   max_tokens=300)
+        r = json.loads(txt[txt.index("{"):txt.rindex("}") + 1])
+        moved, match = float(r.get("moved", 0)), float(r.get("matches", 0))
+        severe = str(r.get("severe", "")).strip().strip(".")
+    except Exception as e:
+        return 0, f"check failed ({str(e)[:80]})", True   # don't block drawing on the checker
+    bad = severe and severe.lower() not in ("none", "no", "n/a", "false")
+    ok = moved >= MIN_MOVED and not bad
+    note = f"moved {moved:g}/10, matches {match:g}/10" + (f", {severe}" if bad else "")
+    return moved + 0.5 * match - (20 if bad else 0), note, ok
+
+
+def draw_one(name, sb, i, seed):
     refs = ref_paths(name, sb)
+    if i == 0:
+        if refs:
+            return lemon.edit_image(frame_prompt(sb, 0), refs, size=FRAME_SIZE, seed=seed)[0]
+        return lemon.generate_image(frame_prompt(sb, 0), size=FRAME_SIZE, seed=seed)[0]
+    if not os.path.exists(frame_path(name, 0)):
+        raise RuntimeError("keyframe 0 is needed first (it's the reference for the others)")
+    return lemon.edit_image(frame_prompt(sb, i), refs + [frame_path(name, 0)], size=FRAME_SIZE, seed=seed)[0]
+
+
+def draw_frames(name, sb, only=None, seed=None, tries=3):
+    """Draw keyframes. Each one after the first is checked against the previous one by the
+    vision model (did it move enough, does it match the plan, any merged/doubled characters)
+    and redrawn with a new seed up to `tries` times; the best attempt is kept."""
+    seed = sb.get("seed", 42) if seed is None else seed
+    checks = sb.setdefault("checks", {})
     for i in range(len(sb["keyframes"])):
         if only and i not in only:
             continue
-        t = time.time()
-        if i == 0:
-            if refs:
-                png = lemon.edit_image(frame_prompt(sb, 0), refs, size=FRAME_SIZE, seed=seed)[0]
-            else:
-                png = lemon.generate_image(frame_prompt(sb, 0), size=FRAME_SIZE, seed=seed)[0]
-        else:
-            if not os.path.exists(frame_path(name, 0)):
-                raise RuntimeError("keyframe 0 is needed first (it's the reference for the others)")
-            png = lemon.edit_image(frame_prompt(sb, i), refs + [frame_path(name, 0)],
-                                   size=FRAME_SIZE, seed=seed + i)[0]
-        open(frame_path(name, i), "wb").write(png)
-        print(f"  key-{i:02d}.png  t={sb['keyframes'][i]['t']}s  ({time.time() - t:.0f}s)")
+        t, best = time.time(), None
+        for attempt in range(max(1, tries if i > 0 else 1)):
+            png = draw_one(name, sb, i, seed + i + 1000 * attempt)
+            open(frame_path(name, i), "wb").write(png)
+            if i == 0 or tries <= 1:
+                best = (0, "", True, png)
+                break
+            score, note, ok = check_frame(name, sb, i)
+            if best is None or score > best[0]:
+                best = (score, note, ok, png)
+            if ok:
+                break
+            print(f"  key-{i:02d}.png  try {attempt + 1}: {note}; redrawing", flush=True)
+        open(frame_path(name, i), "wb").write(best[3])
+        checks[str(i)] = {"note": best[1], "ok": best[2]}
+        flag = "" if best[2] else "  << WEAK: edit its text in storyboard.json and redraw"
+        print(f"  key-{i:02d}.png  t={sb['keyframes'][i]['t']}s  ({time.time() - t:.0f}s)"
+              + (f"  {best[1]}" if best[1] else "") + flag, flush=True)
+    save(name, sb)
     contact_sheet(name, sb)
 
 
@@ -163,7 +229,9 @@ def contact_sheet(name, sb):
     paths = [frame_path(name, i) for i in range(len(sb["keyframes"]))]
     if not all(os.path.exists(p) for p in paths):
         return
-    labels = [f"{i}: t={kf['t']}s" for i, kf in enumerate(sb["keyframes"])]
+    checks = sb.get("checks", {})
+    labels = [f"{i}: t={kf['t']}s" + ("  WEAK" if not checks.get(str(i), {}).get("ok", True) else "")
+              for i, kf in enumerate(sb["keyframes"])]
     script = """
 import sys
 from PIL import Image, ImageDraw
@@ -187,9 +255,12 @@ s.save(out)
 
 
 def segment_prompt(sb, k):
+    """Motion words up front: LTX otherwise tends to hold still near each keyframe."""
     seg = sb["segments"][k]
     sound = f" Sound: {seg['sound']}" if seg.get("sound") else ""
-    return f"{seg['action']}{sound} Characters: {sb['characters']} {sb['style']}"
+    return (f"Continuous fast-moving action, already in motion from the first frame and still "
+            f"moving in the last frame, no pauses, smooth moving camera. {seg['action']}{sound} "
+            f"Characters: {sb['characters']} {sb['style']}")
 
 
 def cmd_new(a):
@@ -230,7 +301,7 @@ def cmd_new(a):
     for kf in kfs:
         print(f"  t={kf['t']:>4g}s  {kf['image']}")
     log(f"keyframes: drawing {n + 1} with Flux (~40-70 s each)")
-    draw_frames(a.name, sb)
+    draw_frames(a.name, sb, tries=a.tries)
     print(f"\nCheck the sheet, edit {out}/storyboard.json if needed, then:\n"
           f"  storyboard frames {a.name} --only N     # redraw a keyframe\n"
           f"  storyboard render {a.name} --draft      # quick motion check\n"
@@ -243,7 +314,7 @@ def cmd_frames(a):
     only = {int(v) for v in a.only.split(",")} if a.only else None
     seed = a.seed if a.seed is not None else (sb.get("seed", 42) + int(time.time()) % 1000 if only else None)
     log(f"keyframes: drawing {'all' if not only else sorted(only)}")
-    draw_frames(a.name, sb, only=only, seed=seed)
+    draw_frames(a.name, sb, only=only, seed=seed, tries=a.tries)
     if only and 0 in only and len(only) < len(sb["keyframes"]):
         print("  note: keyframe 0 is the reference for all the others; "
               "redraw them too if they no longer match it")
@@ -257,54 +328,103 @@ def ffmpeg(*args):
 
 
 def cmd_render(a):
+    """Render every segment and join them.
+
+    continuous (default when a DGL-capable sd-cli is available): segment 0 runs from
+    keyframe 0 to keyframe 1; every later segment *continues* the previous one, starting
+    from its last 17 frames held fixed, and is guided to its next keyframe. Movement carries
+    through the joins instead of pausing on each keyframe.
+    classic (--classic): each segment is pinned to its start and end keyframes."""
     sb = load(a.name)
     out = story_dir(a.name)
     n = len(sb["segments"])
     for i in range(n + 1):
         if not os.path.exists(frame_path(a.name, i)):
             sys.exit(f"keyframe {i} is missing: storyboard frames {a.name}")
+    continuous = not a.classic
+    if continuous:
+        try:
+            ltx_dgl.find_dgl_cli()
+        except RuntimeError as e:
+            print(f"  continuous mode unavailable ({e}); using classic segments")
+            continuous = False
     fps, every = a.fps, float(sb["every"])
     pixels = 512 * 320 if a.draft else 768 * 512
     W, H = (int(v) for v in makevideo.size_like(frame_path(a.name, 0), pixels).split("x"))
-    frames = makevideo.frames_for(every, fps)
-    tag = "draft" if a.draft else "full"
+    frames = makevideo.frames_for(every, fps)            # 121 for 5 s at 24 fps
+    ctx_n = ltx_dgl.CONTEXT_FRAMES
+    tag = ("draft" if a.draft else "full") + ("" if continuous else "-classic")
     seg_dir = os.path.join(out, f"segments-{tag}")
     os.makedirs(seg_dir, exist_ok=True)
     only = {int(v) for v in a.only.split(",")} if a.only else set()
+    ext = "avi" if continuous else "webm"
 
-    log(f"render ({tag}): {n} segments, {W}x{H}, {frames} frames each")
-    t0 = time.time()
+    log(f"render ({tag}): {n} segments, {W}x{H}" +
+        (f", each continuing the last {ctx_n} frames of the one before" if continuous else ""))
+    t0, prev_key = time.time(), ""
     for k in range(n):
         start, end = frame_path(a.name, k), frame_path(a.name, k + 1)
         prompt = segment_prompt(sb, k)
         seed = sb.get("seed", 42) + k + (int(time.time()) % 1000 if k in only else 0)
-        key = hashlib.sha256((prompt + f"{W}x{H}{frames}").encode()
+        seg_frames = frames if (k == 0 or not continuous) else frames + ctx_n - 1
+        key = hashlib.sha256((prompt + f"{W}x{H}{seg_frames}{a.end_strength}{prev_key}").encode()
                              + open(start, "rb").read() + open(end, "rb").read()).hexdigest()
-        raw = os.path.join(seg_dir, f"seg-{k:02d}.webm")
+        raw = os.path.join(seg_dir, f"seg-{k:02d}.{ext}")
         stamp = raw + ".key"
+        label = f"  segment {k} ({sb['segments'][k]['from']:g}-{sb['segments'][k]['to']:g}s)"
         if (k not in only and os.path.exists(raw) and os.path.exists(stamp)
                 and open(stamp).read() == key):
-            print(f"  segment {k} ({sb['segments'][k]['from']:g}-{sb['segments'][k]['to']:g}s): unchanged")
+            print(f"{label}: unchanged")
+            prev_key = key
             continue
-        print(f"  segment {k} ({sb['segments'][k]['from']:g}-{sb['segments'][k]['to']:g}s): "
-              f"rendering...", end="", flush=True)
-        secs = makevideo.render(prompt, raw, W, H, frames, fps=fps, seed=seed, image=start, end_image=end)
+        print(f"{label}: rendering...", end="", flush=True)
+        if not continuous:
+            secs = makevideo.render(prompt, raw, W, H, frames, fps=fps, seed=seed, image=start, end_image=end)
+        elif k == 0:
+            secs = ltx_dgl.render(raw, prompt, W, H, frames, fps=fps, seed=seed, start_image=start,
+                                  end_image=end, end_strength=1.0)
+        else:
+            prev = os.path.join(seg_dir, f"seg-{k - 1:02d}.{ext}")
+            ctx = ltx_dgl.last_frames_as_png(prev, ctx_n, os.path.join(seg_dir, "context"))
+            secs = ltx_dgl.render(raw, prompt, W, H, seg_frames, fps=fps, seed=seed, context_pngs=ctx,
+                                  end_image=end, end_strength=a.end_strength)
         open(stamp, "w").write(key)
+        prev_key = key
         print(f" {secs / 60:.1f} min")
 
-    # Join: each segment ends on the frame the next one starts with, so trim every segment
-    # to exactly `every` seconds, fade the audio 30 ms at the joins to avoid clicks.
+    # Join. Classic: each segment ends on the frame the next one starts with, so trim each to
+    # exactly `every` seconds and cut. Continuous: each later segment's first ctx_n frames
+    # re-create the end of the previous one; cross-fade over the last BLEND of those so the
+    # join has no pop, and drop the rest. Audio is cross-faded the same way.
     log("joining segments")
-    inputs, chains, labels = [], [], ""
+    inputs, chains, total = [], [], 0.0
+    BLEND = 8
     for k in range(n):
-        inputs += ["-i", os.path.join(seg_dir, f"seg-{k:02d}.webm")]
-        d = every if k < n - 1 else frames / fps
-        chains.append(f"[{k}:v]trim=duration={d},setpts=PTS-STARTPTS[v{k}];"
-                      f"[{k}:a]atrim=duration={d},asetpts=PTS-STARTPTS,"
-                      f"afade=t=in:d=0.03,afade=t=out:st={d - 0.03:.3f}:d=0.03[a{k}]")
-        labels += f"[v{k}][a{k}]"
-    total = every * (n - 1) + frames / fps
-    graph = ";".join(chains) + f";{labels}concat=n={n}:v=1:a=1[v][a]"
+        inputs += ["-i", os.path.join(seg_dir, f"seg-{k:02d}.{ext}")]
+        if continuous:
+            skip = 0 if k == 0 else ctx_n - BLEND
+            count = frames if k == 0 else frames + ctx_n - 1 - skip
+        else:
+            skip, count = 0, (round(every * fps) if k < n - 1 else frames)
+        chains.append(f"[{k}:v]trim=start_frame={skip}:end_frame={skip + count},setpts=PTS-STARTPTS[v{k}];"
+                      f"[{k}:a]atrim=start={skip / fps:.4f}:duration={count / fps:.4f},asetpts=PTS-STARTPTS[a{k}]")
+    if continuous and n > 1:
+        D = BLEND / fps
+        vprev, aprev, length = "v0", "a0", frames / fps
+        for k in range(1, n):
+            seg_len = (frames + ctx_n - 1 - (ctx_n - BLEND)) / fps
+            chains.append(f"[{vprev}][v{k}]xfade=transition=fade:duration={D:.4f}:offset={length - D:.4f}[vx{k}];"
+                          f"[{aprev}][a{k}]acrossfade=d={D:.4f}:c1=tri:c2=tri[ax{k}]")
+            vprev, aprev, length = f"vx{k}", f"ax{k}", length + seg_len - D
+        graph = ";".join(chains) + f";[{vprev}]null[v];[{aprev}]anull[a]"
+        total = length
+    else:
+        for k in range(n):
+            chains[k] = chains[k].replace(f"asetpts=PTS-STARTPTS[a{k}]",
+                                          f"asetpts=PTS-STARTPTS,afade=t=in:d=0.03[a{k}]")
+        labels = "".join(f"[v{k}][a{k}]" for k in range(n))
+        graph = ";".join(chains) + f";{labels}concat=n={n}:v=1:a=1[v][a]"
+        total = sum((round(every * fps) if k < n - 1 else frames) for k in range(n)) / fps
     amap = "[a]"
     if a.music:
         log(f"music bed: ACE-Step, {total:.0f} s")
@@ -340,10 +460,12 @@ def main():
     p.add_argument("--style", help="override the visual style, e.g. 'hand-painted fantasy art, soft light'")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--force", action="store_true", help="replace an existing storyboard")
+    p.add_argument("--tries", type=int, default=3, help="redraws per keyframe if the check fails (1 = no check)")
     p = sub.add_parser("frames", help="redraw keyframes")
     p.add_argument("name")
     p.add_argument("--only", help="comma-separated keyframe numbers, e.g. 3,4 (default: all)")
     p.add_argument("--seed", type=int, help="seed (default: a new one when using --only)")
+    p.add_argument("--tries", type=int, default=3, help="redraws per keyframe if the check fails (1 = no check)")
     p = sub.add_parser("render", help="render the segments and join them")
     p.add_argument("name")
     p.add_argument("--draft", action="store_true", help="low resolution, ~4x faster, to check the motion")
@@ -351,6 +473,11 @@ def main():
     p.add_argument("--music", help="add a music bed: style text for ACE-Step")
     p.add_argument("--music-db", type=float, default=14, help="how far below the scene sound the music sits (dB, default 14)")
     p.add_argument("--fps", type=int, default=24)
+    p.add_argument("--classic", action="store_true",
+                   help="pin every segment to its start and end keyframes (old mode; no DGL needed)")
+    p.add_argument("--end-strength", type=float, default=0.8,
+                   help="continuous mode: how firmly each segment must land on its next keyframe "
+                        "(1 = exactly, lower = looser, smoother; default 0.8)")
     a = ap.parse_args()
     {"new": cmd_new, "frames": cmd_frames, "render": cmd_render}[a.cmd](a)
 

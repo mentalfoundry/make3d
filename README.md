@@ -157,20 +157,35 @@ storyboard render knight-dragon --music "epic orchestral battle music, drums, br
 ```
 
 1. **new:** the chat model (Qwen) writes a shot list with a keyframe every `--every` seconds
-   (default 5) plus one fixed description of the characters, setting and style. Flux draws
-   keyframe 0 from text, then every later keyframe using keyframe 0 as a reference for
-   appearance only, so the characters stay the same while poses and camera change.
-   Check `storyboard.png`; edit `storyboard.json` (any keyframe, action or sound text) and
-   redraw with `frames`.
-2. **render:** each segment is rendered by LTX-2.3 from its start keyframe to its end keyframe,
-   with that segment's action and sound text, then all segments are joined into one video.
+   (default 5) plus one fixed description of the characters, setting and style. Keyframes
+   are planned as moments caught **mid-movement**, each clearly different from the last.
+   Flux draws keyframe 0 from text, then every later keyframe using keyframe 0 as a
+   reference for appearance only. Each new keyframe is **checked by the vision model**
+   against the previous one: if it barely moved, or two characters fused or one is drawn
+   twice, it's redrawn with a new seed (up to `--tries`, default 3; the best is kept and
+   weak ones are marked WEAK on `storyboard.png`). Edit `storyboard.json` and redraw
+   with `frames` to fix anything else.
+2. **render:** by default **continuous**: segment 0 runs from keyframe 0 to keyframe 1;
+   every later segment *continues* the previous one, starting from its last 17 frames held
+   fixed, and is guided to its next keyframe (`--end-strength`, default 0.8: lower lets
+   the motion flow more freely, 1 lands exactly). The overlap is cross-faded, so there's
+   no pause or pop at the joins, and keyframes still land on the 5-second marks.
+   `--classic` pins every segment to its start and end keyframes instead (the old mode).
    `--music` adds an ACE-Step music bed under the scene sound (`--music-db`, default 14 dB below).
-   Unchanged segments are reused, so after editing one keyframe only its two segments re-render;
-   `--only 2` re-renders segment 2 with a new seed.
+   Unchanged segments are reused; in continuous mode changing a segment also re-renders
+   every segment after it (each continues the one before). `--only 2` re-renders
+   segment 2 with a new seed.
+
+Continuous mode needs a newer stable-diffusion.cpp than Lemonade bundles (its DGL
+scripting mode): `./setup.sh --video` installs a pinned, checksum-verified build to
+`~/apps/sd-cpp-master-1122-3b12781/` (or set `SD_CLI_DGL`). Without it, render falls
+back to classic. Its video decode is tiled (an untiled decode overran the GPU driver's
+time limit and came out as noise) and its audio decoder runs on the CPU (~30 s).
 
 Output in `out/story/<name>/`: `key-NN.png`, `storyboard.png`, `<name>-full.webm/.ogv`
-(or `-draft`). Time on the development laptop: keyframes ~1 min each; segments ~2.7 min each
-as drafts (480x320) and ~6 min at full quality (768x512), so 30 s ≈ 16 min draft, ≈ 36 min full.
+(or `-draft`). Time on the development laptop: keyframes ~1 min each (~2 min with
+`--refs`, more if redrawn); segments ~3 min each as drafts (480x320) and ~6-7 min at full
+quality (768x512), so 30 s ≈ 18 min draft, ≈ 40 min full.
 
 **Your own characters (`--refs`):** name them in angle brackets and point at a folder with
 an image per name. A/T-pose sheets from `make3d`/`art3d` (`out/<name>/concept.png`) work well.
@@ -188,14 +203,14 @@ each with references. Characters can occasionally swap features (in testing, the
 got a dragon's head); redraw that keyframe with `frames --only N`.
 
 What works and what doesn't:
-- **Segments only move as much as the keyframes differ.** Two nearly identical keyframes
-  give a nearly frozen segment. Make each keyframe a clearly different moment.
-- With `--refs`, later keyframes tend to keep keyframe 0's layout. If two keyframes come out
-  too similar, rewrite that keyframe's `image` text in `storyboard.json` as a clearly
-  different moment (another position, camera angle or distance) and redraw it.
-- LTX tends to hold near each keyframe and move in the middle, so motion can feel like
-  bursts between poses. Big camera changes between keyframes become fast sweeps.
-- Each segment's sound is generated separately; a music bed (`--music`) hides the joins.
+- **Segments only move as much as the keyframes differ.** The planner and the keyframe
+  check exist to prevent near-identical keyframes; if one still slips through, rewrite its
+  `image` text in `storyboard.json` as a clearly different moment and redraw it.
+- With `--refs`, later keyframes tend to keep keyframe 0's layout (the check catches the
+  worst cases).
+- Fast action brings some smeared or garbled frames mid-movement (limbs, wings).
+- Each segment's sound is generated separately; joins are cross-faded and a music bed
+  (`--music`) hides them further.
 
 ## Music and sound effects: `makesound`
 
