@@ -1,7 +1,8 @@
-# Offline 3D asset pipeline
+# Offline game asset pipeline
 
 Text description or your own art → concept image (Flux) → 3D model (TRELLIS.2) →
-game-ready, rigged files (Blender). Everything runs locally against a
+game-ready, rigged files (Blender). Plus short videos with sound (LTX-2.3), music and
+sound effects. Everything runs locally against a
 [Lemonade](https://github.com/lemonade-sdk/lemonade) server.
 
 ## Development hardware
@@ -32,6 +33,15 @@ so minimum requirements are unknown.
 - A GPU with Vulkan support and enough memory for Flux and TRELLIS together.
 - ~16 GB of free system RAM for TRELLIS (see the memory note in [docs/lemonade.md](docs/lemonade.md)).
 - ~25 GB disk for the models (~47 GB with the optional Qwen model for `art3d`).
+
+**Video and sound** (optional): ~26 GB more disk and ~25 GB free GPU memory for
+`makevideo` (runs on the pipeline machine, not through Lemonade); ~17 GB on the Lemonade
+server for `makesound`'s music and sound-effect models.
+
+**Licences:** the models have their own licences, separate from this repo's code. Check
+them before shipping generated assets in a commercial game, especially
+[LTX-2.3](https://huggingface.co/Lightricks/LTX-2.3), [Gemma](https://ai.google.dev/gemma/terms)
+and each Lemonade model's page.
 
 ## Setup
 
@@ -110,7 +120,49 @@ Expect about 3 extra minutes for the candidates.
 
 A character takes about 7 minutes (~40 s image, ~5 min TRELLIS, ~1 min Blender).
 
-## Useful options
+## Video with sound: `makevideo`
+
+```sh
+makevideo "a campfire crackling at night, sparks rising, an owl hoots" --draft   # ~1.5 min preview
+makevideo "waves crashing on rocks at sunset, seagulls" --seconds 8
+makevideo "the knight draws his sword, metal scraping, wind" --image out/knight/concept.png
+makevideo "a flower opens" --image bud.png --end-image flower.png
+```
+
+LTX-2.3 (distilled 1.1) makes the picture **and a matching sound track** from one prompt,
+so describe the sounds too. It runs through stable-diffusion.cpp's `sd-cli` (the engine
+Lemonade uses for Flux) because Lemonade has no video endpoint yet.
+Download the models once with `./setup.sh --video` (~26 GB in `models/ltx2/`).
+
+- Default 768x512, 5 s at 24 fps, 8 steps. With `--image` the video takes the image's shape.
+  `--draft` = 512x320, 2 s. Options: `--seconds`, `--size WxH`, `--fps`, `--seed`, `--no-audio`.
+- Speed on the development laptop: 5 s at 480x800 in ~6 min; a 2 s draft in ~1.3 min.
+  It uses ~25 GB of GPU memory and ~4 GB of system RAM. If the GPU is short, it unloads
+  TRELLIS and Flux from Lemonade first (they reload on demand); other models are left alone.
+- Output in `out/video/<name>/`: `.webm` (VP8 + Opus: browsers, Unity, VLC), `.ogv` (Theora:
+  Godot's video player) and `.mp4` (H.264: Unreal, phones, editors). Fedora's ffmpeg has no
+  H.264 encoder by default; `sudo dnf swap noopenh264 openh264` enables the `.mp4`.
+- Clips are short and the model invents what isn't in the picture (the knight test grew a
+  sword mid-clip). Make several with `--seed` and keep the best.
+- Uses `SD_CLI` if set, else Lemonade's `/var/cache/lemonade/bin/sd-cpp/vulkan/sd-cli`
+  (install Lemonade's `sd-cpp:vulkan` backend), else `sd-cli` on PATH.
+
+## Music and sound effects: `makesound`
+
+```sh
+makesound "a heavy wooden door creaking open in a stone castle" --seconds 4
+makesound "sword clash, two steel blades" --seconds 2 --takes 3
+makesound --music "calm tavern folk, lute and flute, loopable" --seconds 60
+makesound --music "upbeat pop, female vocals" --lyrics song.txt --seconds 90
+```
+
+Through Lemonade's `/audio/generations`: sound effects with `MOSS-SoundEffect`, music with
+`ACE-Step-Music` (instrumental, or sung with `--lyrics`: a file or text with `[verse]`,
+`[chorus]` tags). Download them once: `lemonade pull MOSS-SoundEffect` / `lemonade pull ACE-Step-Music`.
+Output in `out/sound/<name>/`: `.wav` and `.ogg` (Vorbis; small and loops cleanly in game engines).
+A sound effect takes ~3 minutes on the development laptop, whatever its length.
+
+## More make3d options
 
 - `--options 4` makes 4 concept images and stops. Pick one, then
   `make3d --image ~/3d/out/<name>/concept-option-2.png --name <name>`
@@ -145,6 +197,8 @@ single bone. Check `<name>-joints.png` and pose it in Blender before relying on 
 |---|---|---|
 | `make3d.py` | system Python | The whole chain (the `make3d` command) |
 | `art3d.py` | system Python | Your art → posed concept → `make3d` (the `art3d` command) |
+| `makevideo.py` | system Python | Prompt/image → video with sound via `sd-cli` (the `makevideo` command) |
+| `makesound.py` | system Python | Music and sound effects via Lemonade (the `makesound` command) |
 | `lemon.py` | system Python | Calls Lemonade: Flux generate/edit, TRELLIS |
 | `img2glb.py` | system Python | Just image → raw .glb |
 | `gameready.py` | Blender | Scale, voxel rebuild, decimate, xatlas UVs, texture transfer, export |

@@ -10,6 +10,11 @@ so use that version or newer.
 | `Flux-2-Klein-4B` | Concept images and pose redraws | make3d, art3d | ~8 GB |
 | `TRELLIS-3D` | Image to textured 3D mesh | make3d, art3d | ~15 GB |
 | `Qwen3.6-35B-A3B-MTP-GGUF` (or any vision chat model) | Describing your art | art3d only, optional | ~22 GB |
+| `MOSS-SoundEffect` | Sound effects | makesound, optional | ~6.7 GB |
+| `ACE-Step-Music` | Music, with or without vocals | makesound --music, optional | ~10.5 GB |
+
+`makevideo` doesn't use the Lemonade server: it runs `sd-cli` (from Lemonade's `sd-cpp`
+Vulkan backend) directly on the machine running it, with its own models in `models/ltx2/`.
 
 ## 1. Install Lemonade
 

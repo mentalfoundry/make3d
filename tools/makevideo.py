@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""Prompt (and optionally a start/end image) -> short video with matching sound, locally.
+
+Uses LTX-2.3 (distilled 1.1) through stable-diffusion.cpp's sd-cli on Vulkan: the same
+engine Lemonade uses for Flux, called directly because Lemonade has no video endpoint.
+
+Examples:
+  makevideo "a knight walks through a misty forest, footsteps on leaves, birdsong"
+  makevideo "the knight raises his sword and shouts" --image ~/3d/out/knight/concept.png
+  makevideo "a flower blooms" --image bud.png --end-image flower.png
+  makevideo "waves crashing on rocks at sunset" --seconds 8 --size 1024x576
+  makevideo "a campfire crackling" --draft        # quick low-res preview
+
+Output: ~/3d/out/video/<name>/: <name>.webm (VP8/Opus: browsers, Unity, VLC), <name>.ogv
+(Theora/Vorbis: Godot), <name>.mp4 (H.264/AAC: Unreal, phones, editors; needs an H.264
+encoder in ffmpeg), plus prompt.json with the settings and sd-cli.log.
+"""
+import argparse, json, os, re, shutil, subprocess, sys, time
+
+TOOLS = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(TOOLS)
+sys.path.insert(0, TOOLS)
+import lemon  # noqa: E402
+
+MODELS = os.environ.get("LTX_MODELS", os.path.join(ROOT, "models", "ltx2"))
+FILES = {
+    "diffusion": "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf",
+    "connectors": "ltx-2.3-22b-distilled_embeddings_connectors.safetensors",
+    "vae": "ltx-2.3-22b-distilled_video_vae.safetensors",
+    "audio_vae": "ltx-2.3-22b-distilled_audio_vae.safetensors",
+    "llm": "gemma-3-12b-it-qat-UD-Q4_K_XL.gguf",
+}
+NEGATIVE = "worst quality, low quality, blurry, distorted, artifacts, jittery, watermark, text"
+NEED_GPU_GB = 36   # weights ~26 GB + working memory; measured, see README
+
+
+def find_sd_cli():
+    for p in (os.environ.get("SD_CLI"), "/var/cache/lemonade/bin/sd-cpp/vulkan/sd-cli",
+              shutil.which("sd-cli")):
+        if p and os.path.exists(p):
+            return p
+    sys.exit("sd-cli not found. It comes with Lemonade's sd-cpp Vulkan backend, "
+             "or set SD_CLI=/path/to/sd-cli")
+
+
+def gpu_free_gb():
+    """Free GPU memory on AMD (sysfs); None if unknown."""
+    best = None
+    for card in os.listdir("/sys/class/drm"):
+        d = f"/sys/class/drm/{card}/device"
+        try:
+            total = int(open(f"{d}/mem_info_vram_total").read())
+            used = int(open(f"{d}/mem_info_vram_used").read())
+        except OSError:
+            continue
+        best = max(best or 0, (total - used) / 2**30)
+    return best
+
+
+def make_room():
+    """Unload the 3D pipeline's own models (they reload on demand) if the GPU is short.
+    Chat, voice and other shared models are left alone."""
+    free = gpu_free_gb()
+    if free is None or free >= NEED_GPU_GB:
+        return
+    print(f"  GPU memory free: {free:.0f} GB, need ~{NEED_GPU_GB}; unloading TRELLIS-3D and Flux")
+    for m in (lemon.MODEL_3D, lemon.IMAGE_MODEL):
+        try:
+            lemon.unload(m)
+        except Exception:
+            pass
+    time.sleep(3)
+    free = gpu_free_gb()
+    if free is not None and free < NEED_GPU_GB - 4:
+        print(f"  warning: still only {free:.0f} GB free; the run may fail. "
+              f"Unload other models in Lemonade if it does.")
+
+
+def ffmpeg(*args):
+    r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args],
+                       capture_output=True, text=True)
+    return r.returncode == 0, r.stderr.strip()
+
+
+def make_copies(raw, out, name, pixels):
+    """sd-cli writes VP8 with uncompressed PCM audio, which browsers and many players
+    reject. Make: <name>.webm (VP8 + Opus), <name>.ogv (Theora + Vorbis, for Godot) and
+    <name>.mp4 (H.264 + AAC) when an H.264 encoder is available."""
+    made = []
+    webm = os.path.join(out, f"{name}.webm")
+    ok, err = ffmpeg("-i", raw, "-c:v", "copy", "-c:a", "libopus", "-b:a", "160k", webm)
+    if ok:
+        os.remove(raw)
+        made.append(webm)
+    else:
+        os.replace(raw, webm)
+        made.append(webm + "  (audio left as PCM: " + err[-120:] + ")")
+    ogv = os.path.join(out, f"{name}.ogv")
+    if ffmpeg("-i", webm, "-c:v", "libtheora", "-q:v", "8", "-c:a", "libvorbis", "-q:a", "6", ogv)[0]:
+        made.append(ogv)
+    mp4 = os.path.join(out, f"{name}.mp4")
+    for enc in (["-c:v", "libx264", "-crf", "18"],
+                ["-c:v", "libopenh264", "-b:v", f"{max(2, pixels * 24 // 100000)}M"]):
+        if ffmpeg("-i", webm, *enc, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                  "-movflags", "+faststart", mp4)[0]:
+            made.append(mp4)
+            break
+    else:
+        if os.path.exists(mp4):
+            os.remove(mp4)
+        made.append("(no .mp4: ffmpeg has no working H.264 encoder. On Fedora: "
+                    "sudo dnf swap noopenh264 openh264)")
+    return made
+
+
+def size_like(image, pixels):
+    """WxH (multiples of 32) with the image's aspect ratio and about `pixels` pixels."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                        "stream=width,height", "-of", "csv=p=0", image], capture_output=True, text=True)
+    try:
+        w, h = (int(v) for v in r.stdout.strip().split(",")[:2])
+    except ValueError:
+        return "768x512"
+    k = (pixels / (w * h)) ** 0.5
+    return f"{max(256, round(w * k / 32) * 32)}x{max(256, round(h * k / 32) * 32)}"
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("prompt", help="what happens, including the sounds you want to hear")
+    ap.add_argument("--name", help="output name (default: from the prompt)")
+    ap.add_argument("--image", help="start frame (image-to-video)")
+    ap.add_argument("--end-image", help="end frame (needs --image)")
+    ap.add_argument("--seconds", type=float, default=5, help="length (default 5)")
+    ap.add_argument("--fps", type=int, default=24)
+    ap.add_argument("--size", help="WxH, multiples of 32 (default 768x512, or the start image's "
+                                   "shape at about the same pixel count)")
+    ap.add_argument("--steps", type=int, default=8, help="sampling steps (distilled model: 8)")
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--negative", default=NEGATIVE)
+    ap.add_argument("--no-audio", action="store_true", help="silent video (a bit faster)")
+    ap.add_argument("--draft", action="store_true", help="quick preview: 512x320, 2 seconds")
+    a = ap.parse_args()
+    if a.end_image and not a.image:
+        ap.error("--end-image needs --image")
+    if a.image and not a.size:
+        a.size = size_like(a.image, 768 * 512)
+    if a.draft:
+        a.size, a.seconds = size_like(a.image, 512 * 320) if a.image else "512x320", min(a.seconds, 2)
+    a.size = a.size or "768x512"
+
+    m = re.fullmatch(r"(\d+)x(\d+)", a.size)
+    if not m:
+        ap.error("--size must look like 768x512")
+    W, H = (int(v) // 32 * 32 for v in m.groups())
+    # LTX wants 8k+1 frames
+    frames = max(9, round(a.seconds * a.fps / 8) * 8 + 1)
+
+    missing = [f for f in FILES.values() if not os.path.exists(os.path.join(MODELS, f))]
+    if missing:
+        sys.exit(f"missing model files in {MODELS}: {', '.join(missing)}\n"
+                 "Download them with ./setup.sh --video (see README, 'Video').")
+
+    name = a.name or re.sub(r"[^a-z0-9]+", "-", a.prompt.lower()).strip("-")[:40]
+    out = os.path.join(ROOT, "out", "video", name)
+    os.makedirs(out, exist_ok=True)
+    raw = os.path.join(out, f"{name}-raw.webm")
+
+    f = lambda k: os.path.join(MODELS, FILES[k])
+    cmd = [find_sd_cli(), "-M", "vid_gen",
+           "--diffusion-model", f("diffusion"), "--llm", f("llm"),
+           "--embeddings-connectors", f("connectors"), "--vae", f("vae"),
+           "-p", a.prompt, "-n", a.negative,
+           "--cfg-scale", "1", "--sampling-method", "euler", "--steps", str(a.steps),
+           "-W", str(W), "-H", str(H), "--video-frames", str(frames), "--fps", str(a.fps),
+           "--seed", str(a.seed), "--diffusion-fa", "--vae-tiling", "-o", raw]
+    if not a.no_audio:
+        cmd += ["--audio-vae", f("audio_vae")]
+    if a.image:
+        cmd += ["--init-img", a.image]
+    if a.end_image:
+        cmd += ["--end-img", a.end_image]
+
+    print(f"== video: {W}x{H}, {frames} frames ({frames / a.fps:.1f} s at {a.fps} fps), "
+          f"{a.steps} steps, {'no audio' if a.no_audio else 'with audio'}")
+    make_room()
+    t = time.time()
+    log_path = os.path.join(out, "sd-cli.log")
+    with open(log_path, "w") as log:
+        r = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT)
+    if r.returncode != 0 or not os.path.exists(raw):
+        tail = open(log_path, errors="replace").read()[-2500:]
+        sys.exit(f"sd-cli failed (exit {r.returncode}). Last lines of {log_path}:\n{tail}")
+    secs = time.time() - t
+    print(f"  rendered in {secs / 60:.1f} min")
+
+    has_audio = "audio" in subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", raw],
+        capture_output=True, text=True).stdout
+    made = make_copies(raw, out, name, W * H) if shutil.which("ffmpeg") else [raw]
+    json.dump({"prompt": a.prompt, "negative": a.negative, "image": a.image, "end_image": a.end_image,
+               "size": [W, H], "frames": frames, "fps": a.fps, "steps": a.steps, "seed": a.seed,
+               "audio": not a.no_audio, "render_seconds": round(secs)},
+              open(os.path.join(out, "prompt.json"), "w"), indent=1)
+    if not a.no_audio and not has_audio:
+        print("  warning: the video came out without a sound track")
+    for line in made:
+        print(f"  {line}")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except RuntimeError as e:
+        sys.exit(f"\nerror: {e}")

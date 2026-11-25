@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One-time setup on a new Linux x86-64 machine. Safe to re-run.
-#   ./setup.sh
+#   ./setup.sh            3D pipeline (make3d, art3d)
+#   ./setup.sh --video    also download the LTX-2.3 video models (~26 GB) for makevideo
 # Installs: portable Blender (unless BLENDER points at one), a Python venv built from
 # Blender's Python, the MediaPipe models, and the make3d/art3d commands in ~/.local/bin.
 set -euo pipefail
@@ -67,11 +68,30 @@ for m in "pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_h
     [ -s "$f" ] || { say "model: $(basename "$m")"; curl -fL --progress-bar -o "$f" "$mp/$m"; }
 done
 
+# 3b. Video models (optional)
+if [ "${1:-}" = "--video" ]; then
+    V="$ROOT/models/ltx2"; mkdir -p "$V"
+    L=https://huggingface.co/unsloth/LTX-2.3-GGUF/resolve/main
+    G=https://huggingface.co/unsloth/gemma-3-12b-it-qat-GGUF/resolve/main
+    for pair in "ltx-2.3-22b-distilled-1.1-Q4_K_M.gguf $L/distilled-1.1" \
+                "ltx-2.3-22b-distilled_embeddings_connectors.safetensors $L/text_encoders" \
+                "ltx-2.3-22b-distilled_video_vae.safetensors $L/vae" \
+                "ltx-2.3-22b-distilled_audio_vae.safetensors $L/vae" \
+                "gemma-3-12b-it-qat-UD-Q4_K_XL.gguf $G"; do
+        set -- $pair
+        [ -s "$V/$1" ] && continue
+        say "video model: $1"
+        curl -fL -C - --retry 5 --progress-bar -o "$V/$1.part" "$2/$1" && mv "$V/$1.part" "$V/$1"
+    done
+fi
+
 # 4. Commands
 mkdir -p "$HOME/.local/bin"
 ln -sfn "$ROOT/bin/make3d" "$HOME/.local/bin/make3d"
 ln -sfn "$ROOT/bin/art3d" "$HOME/.local/bin/art3d"
-say "commands: make3d, art3d -> ~/.local/bin"
+ln -sfn "$ROOT/bin/makevideo" "$HOME/.local/bin/makevideo"
+ln -sfn "$ROOT/bin/makesound" "$HOME/.local/bin/makesound"
+say "commands: make3d, art3d, makevideo, makesound -> ~/.local/bin"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "  add ~/.local/bin to your PATH";; esac
 
 # 5. Lemonade check

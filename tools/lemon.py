@@ -147,3 +147,26 @@ def describe_image(image_path, question, max_tokens=800):
                            {"type": "text", "text": question}]}]}).encode()
     resp = json.loads(_post("chat/completions", body, "application/json", timeout=600))
     return resp["choices"][0]["message"]["content"].strip()
+
+
+MUSIC_MODEL = os.environ.get("MUSIC_MODEL", "ACE-Step-Music")
+SFX_MODEL = os.environ.get("SFX_MODEL", "MOSS-SoundEffect")
+
+
+def generate_audio(prompt, model, duration=None, seed=42, lyrics=None, language=None):
+    """Music (ACE-Step) or a sound effect from a text prompt. Returns WAV bytes."""
+    body = {"model": model, "prompt": prompt, "seed": seed, "response_format": "wav"}
+    if duration:
+        body["duration"] = duration
+    if lyrics:
+        body["lyrics"] = lyrics
+    if language:
+        body["vocal_language"] = language
+    data = _post("audio/generations", json.dumps(body).encode(), "application/json")
+    if data[:4] == b"RIFF":
+        return data
+    j = json.loads(data)   # some backends wrap the file in JSON
+    b64 = (j.get("data") or [{}])[0].get("b64_json") or j.get("b64_json") or j.get("audio")
+    if not b64:
+        raise RuntimeError(f"audio/generations: unexpected response: {str(j)[:300]}")
+    return base64.b64decode(b64)
