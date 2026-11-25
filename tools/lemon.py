@@ -10,19 +10,27 @@ def _key():
     key = os.environ.get("LEMONADE_API_KEY")
     if key:
         return key
-    with open(os.path.expanduser("~/.config/lemonade/api-key")) as f:
-        return f.read().strip()
+    try:
+        with open(os.path.expanduser("~/.config/lemonade/api-key")) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return ""   # server without an API key
 
 
 def _post(path, body, content_type, timeout=3600):
-    req = urllib.request.Request(f"{LEMONADE}/{path}", data=body, method="POST",
-                                 headers={"Content-Type": content_type,
-                                          "Authorization": f"Bearer {_key()}"})
+    headers = {"Content-Type": content_type}
+    if _key():
+        headers["Authorization"] = f"Bearer {_key()}"
+    req = urllib.request.Request(f"{LEMONADE}/{path}", data=body, method="POST", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.read()
     except urllib.error.HTTPError as e:
-        raise RuntimeError(f"{path}: HTTP {e.code}: {e.read().decode(errors='replace')[:2000]}")
+        hint = (" (wrong or missing API key: see docs/lemonade.md)" if e.code == 401 else "")
+        raise RuntimeError(f"{path}: HTTP {e.code}{hint}: {e.read().decode(errors='replace')[:2000]}")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"can't reach Lemonade at {LEMONADE} ({e.reason}). Is it running? "
+                           "For a server on another machine set LEMONADE_URL.") from None
 
 
 def _images_from(resp):

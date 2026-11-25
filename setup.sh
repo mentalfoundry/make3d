@@ -11,6 +11,11 @@ APPS="${APPS:-$HOME/apps}"
 
 say() { printf '\n== %s\n' "$*"; }
 
+[ "$(uname -sm)" = "Linux x86_64" ] || { echo "Only Linux x86-64 is supported (this is $(uname -sm))"; exit 1; }
+for c in curl tar xz sha256sum python3; do
+    command -v "$c" >/dev/null || { echo "Missing '$c': install it with your package manager"; exit 1; }
+done
+
 # 1. Blender
 if [ -n "${BLENDER:-}" ]; then
     say "Blender: using \$BLENDER=$BLENDER"
@@ -31,6 +36,16 @@ else
     fi
     ln -sfn "$BLENDER_DIR" "$APPS/blender"
 fi
+
+# Blender needs the usual desktop graphics libraries (X11, OpenGL, Vulkan, xkbcommon)
+missing="$(ldd "$BLENDER_DIR/blender" 2>/dev/null | awk '/not found/ {print $1}' | tr '\n' ' ')"
+if [ -n "$missing" ]; then
+    echo "  Blender is missing system libraries: $missing"
+    echo "  Install your distro's packages for them (see README, 'Troubleshooting'), then re-run."
+    exit 1
+fi
+"$BLENDER_DIR/blender" -b --factory-startup --python-expr "import bpy" >/dev/null 2>&1 \
+    || { echo "  Blender failed to start in background mode; run $BLENDER_DIR/blender -b to see why"; exit 1; }
 
 # 2. venv from Blender's Python (MediaPipe needs Python <= 3.13)
 BPY="$(ls "$BLENDER_DIR"/*/python/bin/python3.* 2>/dev/null | grep -v config | head -1)"

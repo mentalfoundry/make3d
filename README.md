@@ -4,23 +4,61 @@ Text description or your own art → concept image (Flux) → 3D model (TRELLIS.
 game-ready, rigged files (Blender). Everything runs locally against a
 [Lemonade](https://github.com/lemonade-sdk/lemonade) server.
 
-## Setup (new machine)
+## Development hardware
 
-Linux x86-64 with `git`, `curl` and Python 3.8+.
+Developed and tested on one machine only:
 
-```sh
-git clone https://github.com/mentalfoundry/make3d.git ~/3d
-cd ~/3d && ./setup.sh
-```
+| | |
+|---|---|
+| Laptop | ASUS ProArt PX13 GoPro Edition (HN7306EAC) |
+| CPU / GPU | AMD Ryzen AI MAX+ 395 with Radeon 8060S (Strix Halo), Vulkan |
+| Memory | 128 GB unified: BIOS gives 96 GB to the GPU, ~30 GB to the system |
+| OS | Fedora 45 (kernel 7.3) |
+| Software | Lemonade 2026.47.1, Blender 5.2.4 LTS (portable) |
 
-`setup.sh` downloads portable Blender 5.2.4 to `~/apps` (or uses `$BLENDER`), builds
-`venv/` from Blender's Python, installs the packages in `requirements.txt`, downloads
-the MediaPipe pose models into `models/`, links `make3d` and `art3d` into
-`~/.local/bin`, then checks Lemonade has the models it needs. It's safe to re-run.
+Lemonade and the pipeline ran on the same laptop. Smaller machines haven't been tried,
+so minimum requirements are unknown.
 
-You also need a Lemonade server with Flux-2-Klein-4B and TRELLIS-3D, on this machine or
-another one: see [docs/lemonade.md](docs/lemonade.md). Put its API key in
-`~/.config/lemonade/api-key`, and for a remote server set `LEMONADE_URL`.
+## Requirements
+
+**Pipeline machine** (runs `make3d`):
+- Linux x86-64 with a desktop graphics stack: Blender renders on the GPU (views for the
+  rigger and previews), so a headless server without a GPU won't work. macOS and Windows
+  aren't supported.
+- `git`, `curl`, `tar`, `xz`, `sha256sum`, Python 3.8+ (`setup.sh` checks they're installed).
+- ~2 GB disk (Blender ~1 GB, Python packages ~0.6 GB) plus your results (~50 MB per model).
+
+**Lemonade server** (can be the same machine):
+- A GPU with Vulkan support and enough memory for Flux and TRELLIS together.
+- ~16 GB of free system RAM for TRELLIS (see the memory note in [docs/lemonade.md](docs/lemonade.md)).
+- ~25 GB disk for the models (~47 GB with the optional Qwen model for `art3d`).
+
+## Setup
+
+1. **Lemonade:** install it, download the models and set an API key:
+   [docs/lemonade.md](docs/lemonade.md). Skip if you already have a server.
+2. **This repo:**
+   ```sh
+   git clone https://github.com/mentalfoundry/make3d.git ~/3d
+   cd ~/3d && ./setup.sh
+   ```
+   `setup.sh` downloads portable Blender 5.2.4 to `~/apps` (checksum verified; or set
+   `BLENDER=/path/to/blender` to use your own 5.2), checks Blender starts, builds `venv/`
+   from Blender's Python, installs `requirements.txt`, downloads the MediaPipe pose models
+   into `models/` and links `make3d` and `art3d` into `~/.local/bin`. Safe to re-run.
+3. **Connect to Lemonade** if it's on another machine or uses a key:
+   ```sh
+   export LEMONADE_URL=http://<server>:13305/api/v1     # remote server only; add to ~/.bashrc
+   printf '%s' '<key>' > ~/.config/lemonade/api-key      # if the server has a key
+   ```
+   Re-run `./setup.sh`: its last step lists each model as `ok` or `MISSING`.
+4. **PATH:** if setup says `~/.local/bin` isn't on your PATH, add
+   `export PATH="$HOME/.local/bin:$PATH"` to `~/.bashrc` and open a new terminal.
+5. **First test** (~7 minutes; the first run also loads the models):
+   ```sh
+   make3d "a wooden treasure chest with iron bands" --prop
+   ```
+   It should end with `== done` and a `preview.png` in `~/3d/out/a-wooden-treasure-chest-with-iron-bands/`.
 
 Not in git: `out/` (your results), `venv/`, `models/`, `tests/`.
 
@@ -81,7 +119,7 @@ A character takes about 7 minutes (~40 s image, ~5 min TRELLIS, ~1 min Blender).
   or the hands get a single bone each).
 - `--raw ~/3d/out/<name>/raw.glb --name <name>` redoes only the Blender steps (~1 min).
 - `--tris 15000` / `--tex 1024` for lighter models; `--height 2.4` for big creatures.
-- `--resolution` 512 (props default), 1024 (characters default) or 1536. Higher = more detail, time and RAM. A RAM watchdog stops TRELLIS above 14 GB (system RAM is only ~30 GB) so it can't crash Lemonade; if that happens, retry at 512.
+- `--resolution` 512 (props default), 1024 (characters default) or 1536. Higher = more detail, time and RAM. A RAM watchdog stops TRELLIS above 14 GB so it can't crash Lemonade; if that happens, retry at 512.
 - `--seed N` for a different take.
 - `--no-rig` skips the skeleton.
 
@@ -122,3 +160,18 @@ Blender 5.2.4 LTS (portable) is at `~/apps/blender` (override with `BLENDER=/pat
 The venv uses Blender's Python 3.13 because MediaPipe doesn't support newer Pythons yet.
 The scripts find the venv, models and templates relative to the repo, so it can live anywhere;
 the docs assume `~/3d`.
+
+## Troubleshooting
+
+| Message | Fix |
+|---|---|
+| `can't reach Lemonade at …` | Lemonade isn't running (`lemonade status`), or `LEMONADE_URL` is wrong. A remote server needs `host=0.0.0.0` and the port open ([docs/lemonade.md](docs/lemonade.md)). |
+| `HTTP 401 … API key` | The key in `~/.config/lemonade/api-key` doesn't match the server's. Write it with `printf`, not `echo` (no trailing newline). |
+| `HTTP 404` … `model_not_found` | The model name isn't known to the server. Check `IMAGE_MODEL`/`MODEL_3D` aren't set to something else, and that the server's Lemonade is 2026.47.1 or newer. |
+| `TRELLIS used more than 14 GB of RAM` | The watchdog stopped it to protect Lemonade. Retry with `--resolution 512` or a simpler image. |
+| `make3d: command not found` | `~/.local/bin` isn't on your PATH (Setup step 4), or run `~/3d/bin/make3d`. |
+| `Blender is missing system libraries` (setup) | Install the listed libraries with your package manager; usually `libX11`, `libXi`, `libXxf86vm`, `libXfixes`, `libXrender`, `libxkbcommon`, `libSM`, `mesa-libGL` / `libgl1` and `vulkan-loader` / `libvulkan1`. |
+| `rig.py failed` … `no body found` | Pose detection couldn't see a person in the front view. Check `concept.png` is a full-body front view; try `--seed` for another concept, or `--no-rig`. |
+| `could not separate 5 fingers; hand gets a single bone` | Fingers weren't spread in the concept. Try another `--seed` or `--options 4` and pick one with open hands. |
+| art3d: `vision model unavailable` | The chat model isn't downloaded, or another chat model is loaded in its place. It carries on without a description; add details with `--hint`. |
+| `rig.py failed` / `preview.py failed` with a GPU or OpenGL error | Blender couldn't render. It needs a working GPU driver and a desktop session; check `vulkaninfo --summary`. |

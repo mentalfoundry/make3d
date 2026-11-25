@@ -4,17 +4,10 @@
 Usage: img2glb.py IMAGE [-o OUT.glb] [--resolution 512|1024|1536]
                   [--bg threshold|birefnet] [--uv xatlas|box] [--seed N]
 """
-import argparse, base64, json, os, sys, time, urllib.request, urllib.error
+import argparse, os, sys, time
 
-LEMONADE = os.environ.get("LEMONADE_URL", "http://127.0.0.1:13305/api/v1")
-
-
-def api_key():
-    key = os.environ.get("LEMONADE_API_KEY")
-    if key:
-        return key
-    with open(os.path.expanduser("~/.config/lemonade/api-key")) as f:
-        return f.read().strip()
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lemon  # noqa: E402
 
 
 def main():
@@ -28,31 +21,12 @@ def main():
     a = p.parse_args()
 
     out = a.out or os.path.splitext(a.image)[0] + f"-{a.resolution}.glb"
-    with open(a.image, "rb") as f:
-        img = base64.b64encode(f.read()).decode()
-
-    body = json.dumps({"model": "TRELLIS-3D", "image": img, "resolution": a.resolution,
-                       "bg_removal": a.bg, "uv": a.uv, "seed": a.seed}).encode()
-    req = urllib.request.Request(f"{LEMONADE}/3d/generations", data=body, method="POST",
-                                 headers={"Content-Type": "application/json",
-                                          "Authorization": f"Bearer {api_key()}"})
     t = time.time()
     print(f"Generating {out} (resolution {a.resolution}, bg {a.bg}, uv {a.uv}, seed {a.seed})...", flush=True)
     try:
-        with urllib.request.urlopen(req, timeout=3600) as r:
-            data = r.read()
-            ctype = r.headers.get("Content-Type", "")
-    except urllib.error.HTTPError as e:
-        sys.exit(f"HTTP {e.code}: {e.read().decode(errors='replace')[:2000]}")
-
-    if data[:4] != b"glTF":  # some versions wrap the file in JSON
-        try:
-            j = json.loads(data)
-            b64 = (j.get("data") or [{}])[0].get("b64_json") or j.get("b64_json") or j.get("glb")
-            data = base64.b64decode(b64)
-        except Exception:
-            sys.exit(f"Unexpected response ({ctype}): {data[:500]!r}")
-
+        data = lemon.image_to_3d(a.image, resolution=a.resolution, bg=a.bg, uv=a.uv, seed=a.seed)
+    except RuntimeError as e:
+        sys.exit(str(e))
     with open(out, "wb") as f:
         f.write(data)
     print(f"Saved {out} ({len(data)/1e6:.1f} MB) in {time.time()-t:.0f}s")
