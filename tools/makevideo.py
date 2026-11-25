@@ -63,6 +63,10 @@ def make_room():
     free = gpu_free_gb()
     if free is None or free >= NEED_GPU_GB:
         return
+    if not lemon.is_local():
+        print(f"  warning: only {free:.0f} GB GPU memory free (need ~{NEED_GPU_GB}); "
+              f"close other GPU programs if the run fails")
+        return
     print(f"  GPU memory free: {free:.0f} GB, need ~{NEED_GPU_GB}; unloading TRELLIS-3D and Flux")
     for m in (lemon.MODEL_3D, lemon.IMAGE_MODEL):
         try:

@@ -167,9 +167,11 @@ storyboard render knight-dragon --music "epic orchestral battle music, drums, br
    with `frames` to fix anything else.
 2. **render:** by default **continuous**: segment 0 runs from keyframe 0 to keyframe 1;
    every later segment *continues* the previous one, starting from its last 17 frames held
-   fixed, and is guided to its next keyframe (`--end-strength`, default 0.8: lower lets
-   the motion flow more freely, 1 lands exactly). The overlap is cross-faded, so there's
-   no pause or pop at the joins, and keyframes still land on the 5-second marks.
+   fixed, and is guided toward its next keyframe (`--end-strength`, default 0.4). The
+   overlap is cross-faded, so there's no pop at the joins. At 0.4 the video ends each
+   segment *near* its keyframe rather than exactly on it, which keeps it moving. Higher
+   values land closer but make segments rush to the keyframe and then hold still: at 0.8
+   every segment of a 15 s test froze for 1.5–2.5 s at its end, and at 1.0 they snap.
    `--classic` pins every segment to its start and end keyframes instead (the old mode).
    `--music` adds an ACE-Step music bed under the scene sound (`--music-db`, default 14 dB below).
    Unchanged segments are reused; in continuous mode changing a segment also re-renders
@@ -208,7 +210,10 @@ What works and what doesn't:
   `image` text in `storyboard.json` as a clearly different moment and redraw it.
 - With `--refs`, later keyframes tend to keep keyframe 0's layout (the check catches the
   worst cases).
-- Fast action brings some smeared or garbled frames mid-movement (limbs, wings).
+- Fast action brings some smeared or garbled frames mid-movement (limbs, wings), and
+  props come and go (a sword can vanish for a second).
+- A keyframe that changes the camera a lot is the hardest to reach smoothly. If a segment
+  still jumps or stalls, lower `--end-strength`, or rewrite that keyframe closer to the one before.
 - Each segment's sound is generated separately; joins are cross-faded and a music bed
   (`--music`) hides them further.
 
@@ -256,6 +261,56 @@ Body joints come from pose detection (MediaPipe) on a front render; fingers from
 mesh shape. If fingers can't be found (mittens, claws, fused fingers), the hand gets a
 single bone. Check `<name>-joints.png` and pose it in Blender before relying on it.
 
+## Web portal: `portal`
+
+Everything below also runs from a browser, from any machine on your network: forms for
+each tool, a job queue with live logs, a library with 3D, video and audio previews, and a
+storyboard editor (edit keyframe and segment text, redraw single keyframes, render).
+
+```sh
+./setup.sh --portal                  # installs the make3d-portal user service (127.0.0.1:7870)
+portal --set-password                # choose the login password (8+ characters)
+systemctl --user start make3d-portal
+```
+
+Then open `http://localhost:7870/` on this machine.
+
+- **Jobs** run one at a time because they share the GPU. They keep running if you close the
+  browser, and their logs are kept in `out/portal/jobs/`. A job that was running when the
+  portal restarted shows as *interrupted*.
+- **Lemonade address and key** are set on the Settings page, which tests the connection and
+  lists any models that are missing. Every job gets that address and key, so the portal can
+  use a Lemonade server on another machine. Leave the address empty to use this machine;
+  with no key saved, it uses `~/.config/lemonade/api-key`. Video always renders on the
+  portal's own GPU (`makevideo` and `storyboard render` don't go through Lemonade).
+- **Settings** are stored in `~/.config/make3d/portal.json` (readable by you only): the
+  password hash, the Lemonade address and any key you saved.
+- **3D previews** use Google's `<model-viewer>`, which the viewer's browser loads from
+  cdn.jsdelivr.net. Without internet access the page offers the `.glb` file as a download instead.
+
+**Reaching it from other machines.** The portal only listens on this machine. Put an HTTPS
+reverse proxy in front of it, so the password and cookies aren't sent in clear. With Caddy:
+
+```
+https://your-host {
+	redir /make3d /make3d/
+	handle_path /make3d/* {
+		reverse_proxy 127.0.0.1:7870 {
+			header_up X-Forwarded-Prefix /make3d
+		}
+	}
+}
+```
+
+The portal works under a path like `/make3d/` (set `X-Forwarded-Prefix` as above) or at the
+root of its own site. On a trusted network you can serve it directly instead: set
+`PORTAL_HOST=0.0.0.0 ./setup.sh --portal` and open the port in your firewall
+(`sudo firewall-cmd --add-port=7870/tcp --permanent && sudo firewall-cmd --reload` on Fedora). It's
+plain HTTP then.
+
+If the service should keep running while you're logged out, run
+`sudo loginctl enable-linger $USER` once.
+
 ## Tools (`~/3d/tools/`)
 
 | Script | Runs in | Does |
@@ -265,6 +320,7 @@ single bone. Check `<name>-joints.png` and pose it in Blender before relying on 
 | `makevideo.py` | system Python | Prompt/image → video with sound via `sd-cli` (the `makevideo` command) |
 | `storyboard.py` | system Python | Idea → shot list → keyframes → stitched long video (the `storyboard` command) |
 | `makesound.py` | system Python | Music and sound effects via Lemonade (the `makesound` command) |
+| `portal.py` | system Python | Web portal for all of the above (the `portal` command; page in `portal/`) |
 | `lemon.py` | system Python | Calls Lemonade: Flux generate/edit, TRELLIS |
 | `img2glb.py` | system Python | Just image → raw .glb |
 | `gameready.py` | Blender | Scale, voxel rebuild, decimate, xatlas UVs, texture transfer, export |

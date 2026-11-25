@@ -2,6 +2,8 @@
 # One-time setup on a new Linux x86-64 machine. Safe to re-run.
 #   ./setup.sh            3D pipeline (make3d, art3d)
 #   ./setup.sh --video    also download the LTX-2.3 video models (~26 GB) for makevideo
+#   ./setup.sh --portal   also install the web portal as a systemd user service
+#   (flags combine: ./setup.sh --video --portal)
 # Installs: portable Blender (unless BLENDER points at one), a Python venv built from
 # Blender's Python, the MediaPipe models, and the make3d/art3d commands in ~/.local/bin.
 set -euo pipefail
@@ -9,6 +11,14 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 BLENDER_VER=5.2.4
 BLENDER_SERIES=5.2
 APPS="${APPS:-$HOME/apps}"
+VIDEO=0; PORTAL=0
+for a in "$@"; do
+    case "$a" in
+        --video) VIDEO=1 ;;
+        --portal) PORTAL=1 ;;
+        *) echo "unknown option $a (use --video and/or --portal)"; exit 1 ;;
+    esac
+done
 
 say() { printf '\n== %s\n' "$*"; }
 
@@ -69,7 +79,7 @@ for m in "pose_landmarker/pose_landmarker_heavy/float16/latest/pose_landmarker_h
 done
 
 # 3b. Video models (optional)
-if [ "${1:-}" = "--video" ]; then
+if [ "$VIDEO" = 1 ]; then
     V="$ROOT/models/ltx2"; mkdir -p "$V"
     L=https://huggingface.co/unsloth/LTX-2.3-GGUF/resolve/main
     G=https://huggingface.co/unsloth/gemma-3-12b-it-qat-GGUF/resolve/main
@@ -109,8 +119,43 @@ ln -sfn "$ROOT/bin/art3d" "$HOME/.local/bin/art3d"
 ln -sfn "$ROOT/bin/makevideo" "$HOME/.local/bin/makevideo"
 ln -sfn "$ROOT/bin/makesound" "$HOME/.local/bin/makesound"
 ln -sfn "$ROOT/bin/storyboard" "$HOME/.local/bin/storyboard"
-say "commands: make3d, art3d, makevideo, storyboard, makesound -> ~/.local/bin"
+ln -sfn "$ROOT/bin/portal" "$HOME/.local/bin/portal"
+say "commands: make3d, art3d, makevideo, storyboard, makesound, portal -> ~/.local/bin"
 case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) echo "  add ~/.local/bin to your PATH";; esac
+
+# 4b. Web portal service (optional)
+if [ "$PORTAL" = 1 ]; then
+    U="$HOME/.config/systemd/user"; mkdir -p "$U"
+    PORT="${PORTAL_PORT:-7870}"; HOST="${PORTAL_HOST:-127.0.0.1}"
+    PCFG="${MAKE3D_PORTAL_CONFIG:-$HOME/.config/make3d/portal.json}"
+    cat > "$U/make3d-portal.service" <<UNIT
+[Unit]
+Description=make3d web portal
+After=network-online.target
+
+[Service]
+ExecStart=$ROOT/bin/portal --host $HOST --port $PORT
+Restart=on-failure
+RestartSec=5
+# Leave room for the desktop if a job runs away (video needs ~4 GB, Blender more on big meshes)
+MemoryMax=20G
+MemorySwapMax=0
+
+[Install]
+WantedBy=default.target
+UNIT
+    systemctl --user daemon-reload
+    systemctl --user enable make3d-portal.service >/dev/null 2>&1
+    say "portal: service make3d-portal on $HOST:$PORT"
+    if grep -qs '"password"' "$PCFG"; then
+        systemctl --user restart make3d-portal.service && echo "  running"
+    else
+        echo "  choose a password, then start it:"
+        echo "    portal --set-password && systemctl --user start make3d-portal"
+    fi
+    loginctl show-user "$USER" -p Linger 2>/dev/null | grep -q yes \
+        || echo "  to keep it running while you're logged out: sudo loginctl enable-linger $USER"
+fi
 
 # 5. Lemonade check
 URL="${LEMONADE_URL:-http://127.0.0.1:13305/api/v1}"

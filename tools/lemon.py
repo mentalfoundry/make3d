@@ -1,9 +1,16 @@
 """Small helpers for calling Lemonade (Flux images and TRELLIS 3D) from scripts."""
-import base64, json, mimetypes, os, uuid, urllib.request, urllib.error
+import base64, json, mimetypes, os, socket, uuid, urllib.parse, urllib.request, urllib.error
 
 LEMONADE = os.environ.get("LEMONADE_URL", "http://127.0.0.1:13305/api/v1")
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "Flux-2-Klein-4B")
 MODEL_3D = os.environ.get("MODEL_3D", "TRELLIS-3D")
+
+
+def is_local():
+    """True when LEMONADE_URL points at this machine (its models share this GPU)."""
+    host = (urllib.parse.urlparse(LEMONADE).hostname or "").lower()
+    return host in ("127.0.0.1", "localhost", "::1", socket.gethostname().lower(),
+                    socket.gethostname().lower() + ".local")
 
 
 def _key():

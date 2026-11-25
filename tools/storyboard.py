@@ -367,7 +367,7 @@ def cmd_render(a):
         prompt = segment_prompt(sb, k)
         seed = sb.get("seed", 42) + k + (int(time.time()) % 1000 if k in only else 0)
         seg_frames = frames if (k == 0 or not continuous) else frames + ctx_n - 1
-        key = hashlib.sha256((prompt + f"{W}x{H}{seg_frames}{a.end_strength}{prev_key}").encode()
+        key = hashlib.sha256((prompt + f"v2{W}x{H}{seg_frames}{a.end_strength}{continuous}{prev_key}").encode()
                              + open(start, "rb").read() + open(end, "rb").read()).hexdigest()
         raw = os.path.join(seg_dir, f"seg-{k:02d}.{ext}")
         stamp = raw + ".key"
@@ -382,7 +382,7 @@ def cmd_render(a):
             secs = makevideo.render(prompt, raw, W, H, frames, fps=fps, seed=seed, image=start, end_image=end)
         elif k == 0:
             secs = ltx_dgl.render(raw, prompt, W, H, frames, fps=fps, seed=seed, start_image=start,
-                                  end_image=end, end_strength=1.0)
+                                  end_image=end, end_strength=a.end_strength)
         else:
             prev = os.path.join(seg_dir, f"seg-{k - 1:02d}.{ext}")
             ctx = ltx_dgl.last_frames_as_png(prev, ctx_n, os.path.join(seg_dir, "context"))
@@ -475,9 +475,9 @@ def main():
     p.add_argument("--fps", type=int, default=24)
     p.add_argument("--classic", action="store_true",
                    help="pin every segment to its start and end keyframes (old mode; no DGL needed)")
-    p.add_argument("--end-strength", type=float, default=0.8,
+    p.add_argument("--end-strength", type=float, default=0.4,
                    help="continuous mode: how firmly each segment must land on its next keyframe "
-                        "(1 = exactly, lower = looser, smoother; default 0.8)")
+                        "(1 = exactly, lower = looser, smoother; default 0.4. Above ~0.6 segments tend to rush to the keyframe and then hold still)")
     a = ap.parse_args()
     {"new": cmd_new, "frames": cmd_frames, "render": cmd_render}[a.cmd](a)
 
