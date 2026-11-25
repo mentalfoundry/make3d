@@ -1,0 +1,12 @@
+# Made by setup.sh
+/venv/
+/models/
+# Your results and experiments
+/out/
+/tests/
+# Template candidates (regenerate with tools/make_templates.py)
+/templates/candidates/
+# Watermarked stock image: test only, not licensed for redistribution
+/templates/test-only/
+__pycache__/
+*.blend1

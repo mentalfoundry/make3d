@@ -1,0 +1,6 @@
+# Installed into ./venv, which is built from Blender's bundled Python 3.13 (see setup.sh)
+mediapipe==1.2.3
+numpy==2.5.5
+opencv-contrib-python==5.1.0.95
+pillow==13.0.0
+xatlas==0.0.11

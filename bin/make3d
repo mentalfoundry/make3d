@@ -1,0 +1,3 @@
+#!/bin/sh
+# Launcher: works from anywhere, including a symlink in ~/.local/bin
+exec python3 -I "$(dirname "$(readlink -f "$0")")/../tools/make3d.py" "$@"
