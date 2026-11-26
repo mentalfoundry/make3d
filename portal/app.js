@@ -140,15 +140,14 @@ const pages = {
   async "3d"() {
     toolPage({
       title: "Text to 3D", tool: "make3d",
-      intro: "Describe a character or object and pick what kind of asset it is. Flux draws a concept in an A-pose, TRELLIS builds the mesh, Blender cleans, textures and rigs it. Expect 10–20 minutes for a character.",
+      intro: `Describe a character or object and pick what kind of asset it is. Flux draws a concept (characters in an A-pose), TRELLIS builds the mesh, Blender cleans, textures and rigs it. Expect 10–20 minutes for a character. To start from an image, use <a href="#art">Art to 3D</a>.`,
       fields: [
-        F.area("description", "Description", { ph: "a dwarf blacksmith with a leather apron and a braided red beard", help: "Leave empty if you upload an image instead." }),
+        F.area("description", "Description", { req: true, ph: "a dwarf blacksmith with a leather apron and a braided red beard" }),
         F.sel("preset", "Asset type", await presetOptions(), { help: "Sets triangles, textures, detail and size", note: true }),
         F.text("name", "Name", { help: "Output folder (default: from the description)" }),
         F.check("prop", "Prop, not a character", { help: "No pose template, no rig" }),
         F.sel("template", "Pose template", await templateOptions(), { help: "Body shape and pose for characters" }),
-        F.file("image", "Use this A-pose image", { help: "Skips the drawing step" }),
-        F.num("options", "Concept options", { min: 1, max: 6, step: 1, ph: "1", help: "Draw several, pick the best automatically" }),
+        F.num("options", "Concept options", { min: 1, max: 6, step: 1, ph: "1", help: "Draw several and stop, so you can pick one with 'Make 3D from this'" }),
         F.sel("resolution", "TRELLIS resolution", [["", "default"], "512", "1024", "1536"], { help: "Default: 1024 characters, 512 props" }),
         F.num("height", "Height (m)", { min: 0.05, max: 50, ph: "1.8 / 1.0" }),
         F.num("tris", "Triangle budget", { min: 500, max: 500000, step: 100, ph: "30000" }),
@@ -157,41 +156,57 @@ const pages = {
         F.check("no_rig", "Skip rigging"),
       ],
     });
-    const form = $("#tool-form");
-    presetHints(form);
-    // The image field means "a ready-posed character" or "an object", depending on Prop
-    const img = form.elements.image.closest("label");
-    const syncImage = () => {
-      const prop = form.elements.prop.checked;
-      img.querySelector("[data-lbl]").textContent = prop ? "Use this object image" : "Use this A-pose image";
-      img.querySelector(".help").innerHTML = prop
-        ? "Skips the drawing step. One object, plain background."
-        : `Skips the drawing step. Front view, A- or T-pose, plain background, empty hands with fingers spread. Other character art: use <a href="#art">Art to 3D</a>.`;
-    };
-    form.elements.prop.addEventListener("change", syncImage);
-    form.elements.preset.addEventListener("change", syncImage);
-    syncImage();
+    presetHints($("#tool-form"));
   },
 
-  async art() {
+  async art(from) {
+    const MODES = [["pose", "Character in any pose: redraw it in an A-pose"],
+                   ["posed", "Character already in an A- or T-pose: use as-is"],
+                   ["object", "Object or structure: use as-is"]];
+    // From a concept/pose option in the library: it's already posed (or an object)
+    let mode = "pose";
+    if (from) {
+      mode = "posed";
+      const jobs = await api("api/jobs").catch(() => []);
+      const j = jobs.find(j => j.outdir === from.split("/")[0] && j.tool === "make3d");
+      if (j && (j.form.prop || presetData?.presets[j.form.preset]?.kind === "prop")) mode = "object";
+    }
+    await presetOptions();
     toolPage({
-      title: "Your art to 3D", tool: "art3d",
-      intro: "Upload your own character art. The vision model describes it, Flux redraws it in an A- or T-pose in your style, the best candidate goes on to 3D.",
+      title: "Art to 3D", tool: "art3d", extra: from ? { from } : {},
+      intro: "Start from your own image. Character art in any pose is described by the vision model and redrawn in an A- or T-pose in your style, and the best candidate goes on to 3D. Art that's already posed, and objects, go straight to 3D.",
+      note: from ? `Using <b>${esc(from)}</b> from the library. <a href="#art">Upload a different image instead</a><br><img src="${outUrl(from)}" alt="" style="max-height:220px;margin-top:8px;border-radius:6px">` : "",
       fields: [
-        F.file("art", "Character art"),
-        F.text("name", "Name", { help: "Default: from the file name" }),
+        ...(from ? [] : [F.file("art", "Image")]),
+        F.sel("mode", "What is it?", MODES, { value: mode, full: true }),
+        F.text("name", "Name", { help: from ? `Default: ${from.split("/")[0]}` : "Default: from the file name" }),
+        F.sel("preset", "Asset type", [], { help: "Sets triangles, textures and detail", note: true }),
+        F.num("height", "Height (m)", { min: 0.05, max: 50, ph: "1.8 / 1.0" }),
         F.sel("pose", "Pose", [["a", "A-pose (recommended)"], ["t", "T-pose"]]),
-        F.sel("preset", "Character type", await presetOptions(true), { help: "Sets triangles, textures and detail", note: true }),
         F.sel("template", "Pose template", await templateOptions(), { help: "Default: picked from the art (build)" }),
         F.text("hint", "Hint", { full: true, help: "Correct anything the vision model gets wrong, e.g. 'she carries a bow on her back'" }),
         F.num("tris", "Triangle budget", { min: 500, max: 500000, step: 100, ph: "30000" }),
         F.sel("tex", "Texture size", [["", "default (2048)"], "512", "1024", "2048", "4096"]),
         F.num("options", "Candidates", { min: 1, max: 6, step: 1, ph: "3" }),
         F.num("seed", "Seed", { min: 0, step: 1, ph: "42" }),
-        F.check("stop", "Stop after the pose candidates", { help: "Check them before spending time on 3D" }),
+        F.check("stop", "Stop after the pose candidates", { help: "Pick one yourself with 'Make 3D from this'" }),
       ],
     });
-    presetHints($("#tool-form"));
+    const form = $("#tool-form");
+    const sync = () => {
+      const m = form.elements.mode.value;
+      // Redraw-only fields
+      for (const k of ["pose", "template", "hint", "options", "stop"]) form.elements[k].closest("label").hidden = m !== "pose";
+      // Asset types that fit: characters or objects
+      const kind = m === "object" ? "prop" : "character", sel = form.elements.preset, keep = sel.value;
+      sel.innerHTML = [["", "custom / default"], ...Object.entries(presetData.presets).filter(([, p]) => p.kind === kind).map(([k, p]) => [k, p.label])]
+        .map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+      sel.value = [...sel.options].some(o => o.value === keep) ? keep : "";
+      sel.onchange?.();
+    };
+    form.elements.mode.addEventListener("change", sync);
+    sync();
+    presetHints(form);
   },
 
   async video() {
@@ -351,7 +366,8 @@ function loadModelViewer() {
 function mediaHtml(rel, name, size) {
   const url = outUrl(rel), dl = `<a href="${url}?dl=1" download>download</a>`;
   const ext = name.toLowerCase().split(".").pop();
-  const cap = `<div class="cap"><span>${esc(name)}</span><span class="muted">${size != null ? fmtSize(size) + " · " : ""}${dl}</span></div>`;
+  const pick = /^(concept|pose)-option-\d+\.(png|jpe?g|webp)$/i.test(name) ? `<a class="pick" href="#art/${esc(rel)}">Make 3D from this</a>` : "";
+  const cap = `<div class="cap"><span>${esc(name)}</span><span class="muted">${size != null ? fmtSize(size) + " · " : ""}${dl}</span></div>${pick}`;
   if (["png", "jpg", "jpeg", "webp"].includes(ext)) return `<div class="media"><a href="${url}" target="_blank"><img loading="lazy" src="${url}" alt="${esc(name)}"></a>${cap}</div>`;
   if (["webm", "mp4", "ogv"].includes(ext)) return `<div class="media wide"><video controls preload="metadata" src="${url}"></video>${cap}</div>`;
   if (["wav", "ogg", "mp3"].includes(ext)) return `<div class="media"><audio controls preload="none" src="${url}"></audio>${cap}</div>`;

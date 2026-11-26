@@ -328,6 +328,14 @@ systemctl --user start make3d-portal
 
 Then open `http://localhost:7870/` on this machine.
 
+- **Text to 3D and Art to 3D.** Text to 3D always draws its own concept from your
+  description, with characters in an A-pose. Art to 3D starts from an image and asks what it is:
+  - a character in any pose: redrawn onto a pose template, as with `art3d`
+  - a character already in an A- or T-pose: used as-is
+  - an object or structure: used as-is
+
+  Concept and pose options (from "Concept options", or "Stop after the pose candidates")
+  each get a **Make 3D from this** button, which opens Art to 3D with that image already chosen.
 - **Jobs** run one at a time because they share the GPU. They keep running if you close the
   browser, and their logs are kept in `out/portal/jobs/`. A job that was running when the
   portal restarted shows as *interrupted*.

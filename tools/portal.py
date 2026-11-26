@@ -230,9 +230,8 @@ def build_job(tool, form, job_id):
 
     if tool == "make3d":
         desc = _s(form, "description")
-        image = form.get("image")
-        if not desc and not image:
-            raise BadRequest("describe what to make, or upload an image")
+        if not desc:
+            raise BadRequest("describe what to make (to start from an image, use Art to 3D)")
         name = slug(_s(form, "name") or desc or "model")
         if not name or name in NAMED_DIRS:
             raise BadRequest("choose another name")
@@ -242,8 +241,6 @@ def build_job(tool, form, job_id):
         opt("preset", "--preset", choices=list(PRESETS))
         flag("prop", "--prop")
         opt("template", "--template", choices=templates())
-        if image:
-            args += ["--image", _save_upload(image, up_dir, "image")]
         opt("options", "--options", int, 1, 6)
         opt("seed", "--seed", int, 0, 2 ** 31)
         opt("resolution", "--resolution", int, 512, 1536, choices=[512, 1024, 1536])
@@ -251,24 +248,50 @@ def build_job(tool, form, job_id):
         opt("tris", "--tris", int, 500, 500000)
         opt("tex", "--tex", int, 256, 8192, choices=[512, 1024, 2048, 4096])
         flag("no_rig", "--no-rig")
-        return "make3d", args, f"3D: {desc or 'from image'}", name
+        return "make3d", args, f"3D: {desc}", name
     if tool == "art3d":
-        if not form.get("art"):
-            raise BadRequest("upload your character art")
-        name = slug(_s(form, "name") or os.path.splitext(str(form["art"].get("filename", "")))[0] or "art")
+        # mode: "pose" = character art in any pose, redrawn onto a template (art3d);
+        #       "posed" = character already in an A/T-pose, used as-is; "object" = used as-is, no rig.
+        mode = _s(form, "mode") or "pose"
+        if mode not in ("pose", "posed", "object"):
+            raise BadRequest("unknown mode")
+        src = _s(form, "from")   # an image already in the library, e.g. knight/concept-option-2.png
+        if src:
+            p = safe_out_path(src)
+            if not p or not os.path.isfile(p) or not p.lower().endswith(IMAGE_EXT):
+                raise BadRequest("that image isn't in the library")
+            default_name = os.path.relpath(p, OUT).split(os.sep)[0]
+        elif form.get("art"):
+            default_name = os.path.splitext(str(form["art"].get("filename", "")))[0]
+        else:
+            raise BadRequest("upload an image")
+        name = slug(_s(form, "name") or default_name or "art")
         if not name or name in NAMED_DIRS:
             raise BadRequest("choose another name")
-        args += [_save_upload(form["art"], up_dir, "art"), "--name", name]
-        opt("pose", "--pose", choices=["a", "t"])
-        opt("preset", "--preset", choices=[k for k, p in PRESETS.items() if p["kind"] == "character"])
+        if src and mode == "pose" and name == default_name and not os.path.basename(p).startswith("art."):
+            raise BadRequest(f"give it a new name: redrawing into '{name}' would replace its art.png")
+        image = p if src else _save_upload(form["art"], up_dir, "art")
+        kind = "prop" if mode == "object" else "character"
+        presets = [k for k, v in PRESETS.items() if v["kind"] == kind]
+        if mode == "pose":
+            args += [image, "--name", name]
+            opt("pose", "--pose", choices=["a", "t"])
+            opt("template", "--template", choices=templates())
+            opt("hint", "--hint")
+            opt("options", "--options", int, 1, 6)
+            flag("stop", "--stop")
+        else:
+            args += ["--image", image, "--name", name]
+            if mode == "object":
+                args.append("--prop")
+        opt("preset", "--preset", choices=presets)
+        opt("height", "--height", float, 0.05, 50)
         opt("tris", "--tris", int, 500, 500000)
         opt("tex", "--tex", int, 256, 8192, choices=[512, 1024, 2048, 4096])
-        opt("template", "--template", choices=templates())
-        opt("hint", "--hint")
-        opt("options", "--options", int, 1, 6)
         opt("seed", "--seed", int, 0, 2 ** 31)
-        flag("stop", "--stop")
-        return "art3d", args, f"Art to 3D: {name}", name
+        if mode == "pose":
+            return "art3d", args, f"Art to 3D: {name}", name
+        return "make3d", args, f"Art to 3D: {name} (" + ("object" if mode == "object" else "as-is") + ")", name
     if tool == "makevideo":
         prompt = _s(form, "prompt", required=True)
         name = slug(_s(form, "name") or prompt)

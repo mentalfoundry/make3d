@@ -147,6 +147,10 @@ pre.log {
 .media audio { width: 100%; display: block; }
 .media .cap { padding: 8px 12px; display: flex; justify-content: space-between; gap: 8px; font-size: .85rem; align-items: center; }
 .media .cap span { overflow-wrap: anywhere; }
+.media .cap span.muted { flex-shrink: 0; }
+.media a.pick { display: block; margin: 0 12px 10px; padding: 6px; text-align: center; border-radius: 7px;
+  background: var(--accent); color: var(--accent-text); font-weight: 600; font-size: .85rem; text-decoration: none; }
+.media a.pick:hover { filter: brightness(1.08); }
 model-viewer { width: 100%; height: 420px; background: var(--panel-2); }
 
 .files { columns: 3 220px; font-size: .88rem; }
