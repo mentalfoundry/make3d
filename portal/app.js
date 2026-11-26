@@ -532,7 +532,16 @@ async function settingsPage() {
       ${s.key_source === "portal" ? `<label class="check" style="padding:0"><input type="checkbox" name="clear_key"><span>Forget the saved key</span></label>` : ""}
       <div class="row"><button type="button" id="test">Test connection</button><button class="primary" type="submit">Save</button><span id="lemon-msg" class="small"></span></div>
       <div id="test-out"></div>
-    </form></div>`;
+    </form>
+    <div class="card stack"><h3>This machine</h3>
+      <p class="muted small">Video, storyboards and the Blender steps of 3D always run here, whichever Lemonade you use, so their parts are checked here rather than in the Lemonade test.</p>
+      <div id="local-out" class="muted">Checking…</div></div></div>`;
+  api("api/local").then(r => {
+    const gpu = r.gpu_free_gb == null ? "" : `<p class="small">GPU memory free now: <b>${r.gpu_free_gb} GB</b> <span class="muted">(video needs about ${r.gpu_needed_gb} GB; when Lemonade runs here, video unloads its models to make room)</span></p>`;
+    $("#local-out").className = "";
+    $("#local-out").innerHTML = `<table class="models"><thead><tr><th>Part</th><th>Used for</th><th></th></tr></thead><tbody>${r.items.map(m =>
+      `<tr><td>${esc(m.name)}${m.detail ? `<div class="muted small" style="font-family:inherit">${esc(m.detail)}</div>` : ""}</td><td class="muted">${esc(m.use)}</td><td>${m.ok ? `<span class="ok-text">installed</span>` : `<span class="bad-text">missing</span> <span class="muted small">${esc(m.fix)}</span>`}</td></tr>`).join("")}</tbody></table>${gpu}`;
+  }).catch(e => { $("#local-out").innerHTML = `<p class="error">${esc(e.message)}</p>`; });
   const form = $("#lemon-form");
   const vals = () => ({ lemonade_url: form.lemonade_url.value.trim(), lemonade_key: form.lemonade_key.value.trim(), clear_key: !!(form.clear_key && form.clear_key.checked) });
   $("#test").onclick = async () => {

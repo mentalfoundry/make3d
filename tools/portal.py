@@ -128,6 +128,40 @@ def test_lemonade(url, key):
     return {"ok": True, "models": [{"id": m, "use": use, "present": m in ids} for m, use in MODELS_NEEDED.items()]}
 
 
+def local_check():
+    """What runs on this machine whatever Lemonade is used: video (LTX-2.3 via sd-cli), Blender, ffmpeg."""
+    import makevideo, ltx_dgl   # imported here: only needed for this page
+    items = []
+
+    def add(name, use, ok, detail="", fix=""):
+        items.append({"name": name, "use": use, "ok": bool(ok), "detail": detail, "fix": "" if ok else fix})
+
+    uses = {"diffusion": "LTX-2.3 video model", "connectors": "LTX-2.3 text connectors",
+            "vae": "LTX-2.3 video decoder", "audio_vae": "LTX-2.3 audio decoder",
+            "llm": "Gemma 3 prompt encoder for LTX-2.3"}
+    for key, f in makevideo.FILES.items():
+        p = os.path.join(makevideo.MODELS, f)
+        size = os.path.getsize(p) if os.path.isfile(p) else 0
+        add(f, uses.get(key, "video"), size > 0, f"{size / 2**30:.1f} GB" if size else "", "./setup.sh --video")
+    try:
+        cli = makevideo.find_sd_cli()
+    except SystemExit:
+        cli = None
+    add("sd-cli", "renders video", cli, cli or "", "comes with Lemonade's sd-cpp Vulkan backend, or set SD_CLI")
+    try:
+        dgl = ltx_dgl.find_dgl_cli()
+    except (RuntimeError, OSError):
+        dgl = None
+    add("sd-cli with DGL", "storyboard continuous mode", dgl, dgl or "", "./setup.sh --video")
+    blender = os.environ.get("BLENDER") or os.path.expanduser("~/apps/blender/blender")
+    add("Blender", "3D clean-up, textures, rigging", os.access(blender, os.X_OK), blender, "./setup.sh")
+    ff = shutil.which("ffmpeg")
+    add("ffmpeg", "video and sound encoding", ff, ff or "", "install ffmpeg with your package manager")
+    free = makevideo.gpu_free_gb()
+    return {"items": items, "gpu_free_gb": round(free, 1) if free is not None else None,
+            "gpu_needed_gb": makevideo.NEED_GPU_GB}
+
+
 # ---------------------------------------------------------------- jobs
 
 def slug(text, n=40):
@@ -690,6 +724,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if m:
             info = story_info(m.group(1))
             return self.send(200, info) if info else self.send(404, {"error": "no such storyboard"})
+        if path == "/api/local":
+            return self.send(200, local_check())
         if path == "/api/settings":
             cfg = self.server.cfg()
             return self.send(200, {"lemonade_url": cfg.get("lemonade_url") or "", "default_url": DEFAULT_LEMONADE,
