@@ -611,57 +611,131 @@ function renderFormHtml() {
 }
 
 async function storyPage(name) {
-  const info = await api(`api/story/${encodeURIComponent(name)}`);
-  const sb = info.storyboard, checks = sb.checks || {};
-  const v = f => `?v=${Math.round(info.mtimes[f] || 0)}`;
-  const kfs = sb.keyframes.map((k, i) => {
-    const file = `key-${String(i).padStart(2, "0")}.png`;
-    const c = checks[i] || checks[String(i)];
-    const flag = c ? `<span class="flag ${c.ok ? "ok" : "weak"}">${c.ok ? "✓" : "WEAK"} ${esc(c.note || "")}</span>` : "";
-    const img = info.keyframes.includes(file) ? `<a href="${outUrl(`story/${name}/${file}`)}" target="_blank"><img src="${outUrl(`story/${name}/${file}`)}${v(file)}" alt="keyframe ${i}"></a>` : `<div class="thumb" style="aspect-ratio:16/10;background:var(--panel-2)"></div>`;
-    return `<div class="kf">${img}<div class="body stack">
-      <div class="row spread"><b>Keyframe ${i} · ${k.t}s</b><button class="small redraw" data-i="${i}">Redraw</button></div>${flag}
-      <textarea data-kf="${i}" aria-label="keyframe ${i} description">${esc(k.image)}</textarea></div></div>`;
-  }).join("");
+  let info = await api(`api/story/${encodeURIComponent(name)}`);
+  let sb = info.storyboard;
+  const kfile = i => `key-${String(i).padStart(2, "0")}.png`;
+  const flagHtml = i => {
+    const c = (info.storyboard.checks || {})[String(i)];
+    return c ? `<span class="flag ${c.ok ? "ok" : "weak"}">${c.ok ? "✓" : "WEAK"} ${esc(c.note || "")}</span>` : "";
+  };
+  const imgHtml = i => {
+    const f = kfile(i);
+    return info.keyframes.includes(f)
+      ? `<a href="${outUrl(`story/${name}/${f}`)}" target="_blank"><img src="${outUrl(`story/${name}/${f}`)}?v=${Math.round(info.mtimes[f] || 0)}" alt="keyframe ${i}"></a>`
+      : `<div class="thumb" style="aspect-ratio:3/2;background:var(--panel-2)"></div>`;
+  };
+  const kfs = sb.keyframes.map((k, i) => `<div class="kf" data-card="${i}"><div class="kf-img">${imgHtml(i)}<div class="busy" hidden>Redrawing…</div></div><div class="body stack">
+      <div class="row spread"><b>Keyframe ${i} · ${k.t}s</b><button class="small ghost undo" data-i="${i}" ${info.previous.includes(i) ? "" : "hidden"} title="Swap back to the version before the last redraw (click again to swap forward)">Undo redraw</button></div>
+      <div class="flagbox">${flagHtml(i)}</div>
+      <label class="small">What it shows<textarea data-kf="${i}" aria-label="keyframe ${i} description">${esc(k.image)}</textarea></label>
+      <details class="redraw-box"><summary>Redraw this keyframe</summary><div class="stack">
+        <label class="small">Direction for this redraw<span class="help">One-off instructions, e.g. "the dragon on the right, more fire". For a big camera change, edit the text above instead: it outweighs a direction.</span>
+          <textarea data-note="${i}" rows="2" placeholder="optional for a new drawing; required to adjust"></textarea></label>
+        <div class="row small">
+          <label class="radio"><input type="radio" name="mode-${i}" value="new" checked> New drawing</label>
+          <label class="radio"><input type="radio" name="mode-${i}" value="adjust" ${info.keyframes.includes(kfile(i)) ? "" : "disabled"}> Adjust this image</label>
+        </div>
+        <div class="row"><button class="small primary go" data-i="${i}">Redraw</button><span class="error small" data-err="${i}"></span></div>
+      </div></details></div></div>`).join("");
   const segs = sb.segments.map((s, i) => `<div class="seg stack"><b>Segment ${i} · ${s.from}–${s.to}s</b>
       <label>Action<textarea data-seg="${i}" data-f="action">${esc(s.action)}</textarea></label>
       <label>Sound<textarea data-seg="${i}" data-f="sound">${esc(s.sound || "")}</textarea></label></div>`).join("");
-  const vids = rankFiles(info.videos.filter(f => !f.endsWith(".ogv")).map(n => ({ name: n })))
+  const vidsHtml = () => rankFiles(info.videos.filter(f => !f.endsWith(".ogv")).map(n => ({ name: n })))
     .map(f => mediaHtml(`story/${name}/${f.name}`, f.name)).join("");
   main.innerHTML = `<div class="stack">
     <div class="row spread"><p class="small" style="margin:0"><a href="#story">Storyboards</a> / <b>${esc(name)}</b> · <a href="#library/story/${encodeURIComponent(name)}">all files</a></p>
       ${itemButtons(`story/${name}`, name)}</div>
     <div><h2>${esc(sb.title || name)}</h2><p class="muted">${esc(sb.idea || "")}</p>
       <p class="small muted">Characters: ${esc(sb.characters)}<br>Setting: ${esc(sb.setting)}<br>Style: ${esc(sb.style)}</p></div>
-    ${vids ? `<div class="media-grid">${vids}</div>` : ""}
+    <div id="sb-active"></div>
+    <div class="media-grid" id="sb-vids">${vidsHtml()}</div>
     ${renderFormHtml()}
-    <div class="row spread"><h3 style="margin:0">Keyframes</h3><span class="row"><button class="small" id="redraw-all">Redraw all</button></span></div>
+    <div class="row spread"><h3 style="margin:0">Keyframes</h3><span class="row"><span class="muted small" id="sb-polled"></span><button class="small" id="redraw-all">Redraw all</button></span></div>
     <div class="kf-grid">${kfs}</div>
     <div class="card stack"><h3>Segments</h3>${segs}</div>
-    <div class="row"><button class="primary" id="save">Save text changes</button><span class="muted small">Then redraw the keyframes you changed. Segments re-render automatically when their text changes.</span><span class="error" id="save-err"></span></div>
+    <div class="row"><button class="primary" id="save">Save text changes</button><span class="muted small">Redrawing a keyframe saves your text first. Segments re-render automatically when their text changes.</span><span class="error" id="save-err"></span></div>
   </div>`;
   bindItemButtons(main.querySelector(".item-actions"), (p, n) => { location.hash = p ? `#story/${encodeURIComponent(n)}` : "#story"; });
+  main.querySelectorAll("textarea[data-kf], textarea[data-seg]").forEach(t => { t.dataset.orig = t.value; });
 
-  const run = async body => {
-    const job = await api("api/run/storyboard", { name, ...body });
-    location.hash = `#jobs/${job.id}`;
+  const saveText = async () => {
+    const next = JSON.parse(JSON.stringify(info.storyboard));
+    let changed = false;
+    main.querySelectorAll("[data-kf]").forEach(t => { if (t.value.trim() !== t.dataset.orig.trim()) changed = true; next.keyframes[+t.dataset.kf].image = t.value.trim(); });
+    main.querySelectorAll("[data-seg]").forEach(t => { if (t.value.trim() !== t.dataset.orig.trim()) changed = true; next.segments[+t.dataset.seg][t.dataset.f] = t.value.trim(); });
+    if (!changed) return false;
+    await api(`api/story/${encodeURIComponent(name)}`, { storyboard: next });
+    main.querySelectorAll("textarea[data-kf], textarea[data-seg]").forEach(t => { t.dataset.orig = t.value; });
+    info.storyboard = next;
+    return true;
   };
-  main.querySelectorAll(".redraw").forEach(b => b.onclick = () => run({ step: "frames", only: b.dataset.i }).catch(e => alert(e.message)));
-  $("#redraw-all").onclick = () => confirm("Redraw every keyframe?") && run({ step: "frames" }).catch(e => alert(e.message));
+  const run = async body => {
+    await saveText();
+    await api("api/run/storyboard", { name, ...body });
+    refresh();
+  };
+  const pending = new Set();   // keyframes waiting for a redraw we started here
+  main.querySelectorAll(".go").forEach(b => b.onclick = async () => {
+    const i = +b.dataset.i, err = main.querySelector(`[data-err="${i}"]`);
+    const note = main.querySelector(`[data-note="${i}"]`).value.trim();
+    const adjust = main.querySelector(`input[name="mode-${i}"]:checked`).value === "adjust";
+    err.textContent = "";
+    if (adjust && !note) { err.textContent = "Say what to change."; return; }
+    try {
+      await run({ step: "frames", only: String(i), note, adjust });
+      pending.add(i); main.querySelector(`[data-card="${i}"] .busy`).hidden = false;
+      b.closest("details").open = false;
+    } catch (e) { err.textContent = e.message; }
+  });
+  main.querySelectorAll(".undo").forEach(b => b.onclick = async () => {
+    try { await api(`api/story/${encodeURIComponent(name)}/undo/${b.dataset.i}`, {}); refresh(); } catch (e) { alert(e.message); }
+  });
+  $("#redraw-all").onclick = () => confirm("Redraw every keyframe?") && run({ step: "frames" }).then(() => sb.keyframes.forEach((_, i) => { pending.add(i); main.querySelector(`[data-card="${i}"] .busy`).hidden = false; })).catch(e => alert(e.message));
   const rf = $("#render-form");
-  const rfields = RENDER_FIELDS;
   rf.onsubmit = async e => {
     e.preventDefault(); $("#render-err").textContent = "";
-    try { await run({ step: "render", ...await formValues(rf, rfields) }); } catch (err) { $("#render-err").textContent = err.message; }
+    try { await run({ step: "render", ...await formValues(rf, RENDER_FIELDS) }); } catch (err) { $("#render-err").textContent = err.message; }
   };
   $("#save").onclick = async () => {
     $("#save-err").textContent = "";
-    const next = JSON.parse(JSON.stringify(sb));
-    main.querySelectorAll("[data-kf]").forEach(t => next.keyframes[+t.dataset.kf].image = t.value.trim());
-    main.querySelectorAll("[data-seg]").forEach(t => next.segments[+t.dataset.seg][t.dataset.f] = t.value.trim());
-    try { await api(`api/story/${encodeURIComponent(name)}`, { storyboard: next }); $("#save").textContent = "Saved"; setTimeout(() => $("#save") && ($("#save").textContent = "Save text changes"), 1500); }
+    try { await saveText(); $("#save").textContent = "Saved"; setTimeout(() => $("#save") && ($("#save").textContent = "Save text changes"), 1500); }
     catch (err) { $("#save-err").textContent = err.message; }
   };
+
+  // Every 30 s: new keyframe images, checks, videos and job status, without touching text being edited
+  const showActive = () => {
+    $("#sb-active").innerHTML = info.active.length ? `<div class="notice small">${info.active.map(j =>
+      `<span class="status ${j.status}">${j.status}</span> ${esc(j.title)} · <a href="#jobs/${j.id}">log</a>`).join("<br>")}
+      <span class="muted"> This page updates every 30 seconds.</span></div>` : "";
+  };
+  async function refresh() {
+    let next;
+    try { next = await api(`api/story/${encodeURIComponent(name)}`); } catch { return; }
+    if (!$("#sb-vids")) return;   // left the page
+    const old = info;
+    info = next;
+    next.storyboard.keyframes.forEach((k, i) => {
+      const card = main.querySelector(`[data-card="${i}"]`);
+      if (!card) return;
+      const f = kfile(i);
+      if (old.mtimes[f] !== next.mtimes[f] || old.keyframes.includes(f) !== next.keyframes.includes(f)) {
+        card.querySelector(".kf-img > a, .kf-img > .thumb").outerHTML = imgHtml(i);
+        pending.delete(i);
+      }
+      if (!pending.has(i) || !next.active.length) { card.querySelector(".busy").hidden = true; pending.delete(i); }
+      card.querySelector(".flagbox").innerHTML = flagHtml(i);
+      card.querySelector(".undo").hidden = !next.previous.includes(i);
+      card.querySelector(`input[name="mode-${i}"][value="adjust"]`).disabled = !next.keyframes.includes(f);
+      const t = card.querySelector("[data-kf]");   // server text changed and not being edited here
+      if (t.value === t.dataset.orig && document.activeElement !== t && k.image !== t.dataset.orig) { t.value = t.dataset.orig = k.image; }
+    });
+    const vids = next.videos.map(v => v + next.mtimes[v]).join();
+    if (vids !== old.videos.map(v => v + old.mtimes[v]).join()) $("#sb-vids").innerHTML = vidsHtml();
+    showActive();
+    $("#sb-polled").textContent = `checked ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+  }
+  showActive();
+  timers.push(setInterval(refresh, 30000));
 }
 
 // ------------------------------------------------------------------ settings

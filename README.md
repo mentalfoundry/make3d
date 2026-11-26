@@ -364,6 +364,17 @@ Then open `http://localhost:7870/` on this machine.
   switch to *From a storyboard* to render one of your storyboards into a multi-shot scene.
   That tab shows its keyframes and warns about missing or WEAK ones, with the same render options
   as the storyboard page (draft, keyframe strength, music bed, re-render segments).
+- **Storyboard page.** It checks every 30 seconds and shows new keyframes, check results and
+  rendered videos without a reload, leaving any text you're editing alone. A banner shows jobs
+  working on that storyboard. Each keyframe has its own redraw panel:
+  - Redrawing uses the text as currently typed, saving it first.
+  - An optional one-off direction can be added.
+  - *New drawing* draws the keyframe again from scratch.
+  - *Adjust this image* edits the current keyframe as the direction says (e.g. "make the sky
+    blood red"), keeping its composition.
+
+  *Undo redraw* swaps back to the previous version; pressing it again swaps forward. On the
+  command line: `storyboard frames NAME --only 2 --note "..." [--adjust]`.
 - **Jobs** run one at a time because they share the GPU. They keep running if you close the
   browser, and their logs are kept in `out/portal/jobs/`. A job that was running when the
   portal restarted shows as *interrupted*.

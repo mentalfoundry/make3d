@@ -17,6 +17,8 @@
 Examples:
   storyboard new knight-dragon "a knight fights a dragon on a cliff at sunset" --seconds 30
   storyboard new duel "a <knight> fights a <dragon> in a ruined castle" --refs ~/chars
+  storyboard frames duel --only 2 --note "camera lower, the dragon on the right"
+  storyboard frames duel --only 2 --adjust --note "add sparks where the sword hits"
   storyboard frames knight-dragon --only 3,4          # redraw keyframes 3 and 4 (new seed)
   storyboard render knight-dragon --draft             # quick low-res pass to check the motion
   storyboard render knight-dragon --music "epic orchestral battle music, drums, brass"
@@ -157,18 +159,40 @@ def check_frame(name, sb, i):
     return moved + 0.5 * match - (20 if bad else 0), note, ok
 
 
-def draw_one(name, sb, i, seed):
+def prev_path(name, i):
+    return os.path.join(story_dir(name), f"key-{i:02d}-prev.png")
+
+
+def adjust_prompt(sb, i, n_refs, note):
+    """Edit the current keyframe (the last reference image) as the note says."""
+    kf, refs = sb["keyframes"][i], sb.get("refs", [])
+    intro = ""
+    if refs:
+        which = ", ".join(f"image {k + 1} shows the {r['name']}" for k, r in enumerate(refs))
+        intro = (f"Reference images: {which}: keep each character's exact appearance from its "
+                 f"sheet. ")
+    return (f"{intro}Image {n_refs + 1} is the current version of a film keyframe showing: "
+            f"{kf['image']} Keep its composition, characters, setting, lighting and style, and "
+            f"change only this: {note} Style: {sb['style']} Cinematic film still, no text, "
+            f"no watermark, no borders.")
+
+
+def draw_one(name, sb, i, seed, note="", adjust=False):
     refs = ref_paths(name, sb)
+    if adjust:   # edit the previous version of this keyframe
+        return lemon.edit_image(adjust_prompt(sb, i, len(refs), note), refs + [prev_path(name, i)],
+                                size=FRAME_SIZE, seed=seed)[0]
+    prompt = frame_prompt(sb, i) + (f" Director's note for this drawing, follow it closely: {note}" if note else "")
     if i == 0:
         if refs:
-            return lemon.edit_image(frame_prompt(sb, 0), refs, size=FRAME_SIZE, seed=seed)[0]
-        return lemon.generate_image(frame_prompt(sb, 0), size=FRAME_SIZE, seed=seed)[0]
+            return lemon.edit_image(prompt, refs, size=FRAME_SIZE, seed=seed)[0]
+        return lemon.generate_image(prompt, size=FRAME_SIZE, seed=seed)[0]
     if not os.path.exists(frame_path(name, 0)):
         raise RuntimeError("keyframe 0 is needed first (it's the reference for the others)")
-    return lemon.edit_image(frame_prompt(sb, i), refs + [frame_path(name, 0)], size=FRAME_SIZE, seed=seed)[0]
+    return lemon.edit_image(prompt, refs + [frame_path(name, 0)], size=FRAME_SIZE, seed=seed)[0]
 
 
-def draw_frames(name, sb, only=None, seed=None, tries=3):
+def draw_frames(name, sb, only=None, seed=None, tries=3, note="", adjust=False):
     """Draw keyframes. Each one after the first is checked against the previous one by the
     vision model (did it move enough, does it match the plan, any merged/doubled characters)
     and redrawn with a new seed up to `tries` times; the best attempt is kept."""
@@ -178,8 +202,13 @@ def draw_frames(name, sb, only=None, seed=None, tries=3):
         if only and i not in only:
             continue
         t, best = time.time(), None
+        if only and os.path.exists(frame_path(name, i)):   # keep the old one for undo / adjust
+            shutil.copy(frame_path(name, i), prev_path(name, i))
+            sb.setdefault("prev_checks", {})[str(i)] = checks.get(str(i))
+        if adjust and not os.path.exists(prev_path(name, i)):
+            raise RuntimeError(f"keyframe {i} isn't drawn yet, so there is nothing to adjust")
         for attempt in range(max(1, tries if i > 0 else 1)):
-            png = draw_one(name, sb, i, seed + i + 1000 * attempt)
+            png = draw_one(name, sb, i, seed + i + 1000 * attempt, note=note, adjust=adjust)
             open(frame_path(name, i), "wb").write(png)
             if i == 0 or tries <= 1:
                 best = (0, "", True, png)
@@ -313,8 +342,11 @@ def cmd_frames(a):
     sb = load(a.name)
     only = {int(v) for v in a.only.split(",")} if a.only else None
     seed = a.seed if a.seed is not None else (sb.get("seed", 42) + int(time.time()) % 1000 if only else None)
-    log(f"keyframes: drawing {'all' if not only else sorted(only)}")
-    draw_frames(a.name, sb, only=only, seed=seed, tries=a.tries)
+    if a.adjust and not (only and a.note):
+        sys.exit("--adjust needs --only and --note (what to change)")
+    log(f"keyframes: {'adjusting' if a.adjust else 'drawing'} {'all' if not only else sorted(only)}"
+        + (f"  (note: {a.note})" if a.note else ""))
+    draw_frames(a.name, sb, only=only, seed=seed, tries=a.tries, note=a.note or "", adjust=a.adjust)
     if only and 0 in only and len(only) < len(sb["keyframes"]):
         print("  note: keyframe 0 is the reference for all the others; "
               "redraw them too if they no longer match it")
@@ -466,6 +498,9 @@ def main():
     p.add_argument("--only", help="comma-separated keyframe numbers, e.g. 3,4 (default: all)")
     p.add_argument("--seed", type=int, help="seed (default: a new one when using --only)")
     p.add_argument("--tries", type=int, default=3, help="redraws per keyframe if the check fails (1 = no check)")
+    p.add_argument("--note", help="extra direction for this redraw, e.g. 'camera lower, the dragon on the right'")
+    p.add_argument("--adjust", action="store_true",
+                   help="edit the current keyframe as --note says instead of drawing a new one")
     p = sub.add_parser("render", help="render the segments and join them")
     p.add_argument("name")
     p.add_argument("--draft", action="store_true", help="low resolution, about 2.5x faster, to check the motion")

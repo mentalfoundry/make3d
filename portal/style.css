@@ -214,3 +214,11 @@ model-viewer { width: 100%; height: 420px; background: var(--panel-2); }
   background: var(--panel-2); border: 1px solid var(--line); }
 .chip img { width: 26px; height: 26px; object-fit: contain; background: #fff; border-radius: 50%; }
 .chip.bad { color: var(--bad); padding-left: 10px; }
+
+.kf-img { position: relative; }
+.kf-img .busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.45); color: #fff; font-weight: 700; }
+.redraw-box summary { cursor: pointer; font-weight: 600; font-size: .88rem; color: var(--accent); }
+.redraw-box[open] summary { margin-bottom: 8px; }
+.redraw-box textarea { min-height: 54px !important; }
+label.radio { display: inline-flex; gap: 6px; align-items: center; font-weight: 500; }
+label.radio input { accent-color: var(--accent); }

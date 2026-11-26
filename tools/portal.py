@@ -371,7 +371,14 @@ def build_job(tool, form, job_id):
                 args += ["--only", only]
             opt("seed", "--seed", int, 0, 2 ** 31)
             opt("tries", "--tries", int, 1, 5)
-            title = f"Keyframes {only or 'all'}: {name}"
+            note = _s(form, "note")
+            if note:
+                args += ["--note", note[:1000]]
+            if form.get("adjust"):
+                if not (only and note):
+                    raise BadRequest("to adjust a keyframe, say what to change")
+                args.append("--adjust")
+            title = f"Keyframe {only or 'all'} {'adjust' if form.get('adjust') else 'redraw'}: {name}" + (f" ({note[:60]})" if note else "")
         elif step == "render":
             args += ["render", name]
             flag("draft", "--draft")
@@ -653,6 +660,7 @@ def story_info(name):
     files = sorted(os.listdir(d))
     return {"name": slug(name), "storyboard": json.load(open(sbp)),
             "keyframes": [f for f in files if re.fullmatch(r"key-\d+\.png", f)],
+            "previous": [int(m.group(1)) for f in files if (m := re.fullmatch(r"key-(\d+)-prev\.png", f))],
             "videos": [f for f in files if f.endswith((".webm", ".ogv", ".mp4"))],
             "mtimes": {f: os.stat(os.path.join(d, f)).st_mtime for f in files}}
 
@@ -789,7 +797,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         m = re.fullmatch(r"/api/story/([\w-]+)", path)
         if m:
             info = story_info(m.group(1))
-            return self.send(200, info) if info else self.send(404, {"error": "no such storyboard"})
+            if not info:
+                return self.send(404, {"error": "no such storyboard"})
+            info["active"] = [{"id": j["id"], "title": j["title"], "status": j["status"]}
+                              for j in self.server.jobs.list()
+                              if j["outdir"] == f"story/{info['name']}" and j["status"] in ("queued", "running")]
+            return self.send(200, info)
         if path == "/api/local":
             return self.send(200, local_check())
         if path == "/api/settings":
@@ -824,6 +837,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if m:
             j = self.server.jobs.cancel(m.group(1))
             return self.send(200, j) if j else self.send(404, {"error": "no such job"})
+        m = re.fullmatch(r"/api/story/([\w-]+)/undo/(\d+)", path)
+        if m:   # swap a keyframe with the version before its last redraw (again = redo)
+            name, i = slug(m.group(1)), int(m.group(2))
+            d = os.path.join(OUT, "story", name)
+            cur, prev = os.path.join(d, f"key-{i:02d}.png"), os.path.join(d, f"key-{i:02d}-prev.png")
+            if not (os.path.isfile(cur) and os.path.isfile(prev)):
+                return self.send(404, {"error": "no earlier version of this keyframe"})
+            if self.server.jobs.busy(f"story/{name}"):
+                raise BadRequest("a job is working on this storyboard; wait for it first")
+            tmp = cur + ".swap"
+            os.replace(cur, tmp)
+            os.replace(prev, cur)
+            os.replace(tmp, prev)
+            sbp = os.path.join(d, "storyboard.json")
+            sb = json.load(open(sbp))
+            checks, pc = sb.setdefault("checks", {}), sb.setdefault("prev_checks", {})
+            checks[str(i)], pc[str(i)] = pc.get(str(i)), checks.get(str(i))
+            if checks[str(i)] is None:
+                checks.pop(str(i))
+            with open(sbp + ".tmp", "w") as f:
+                json.dump(sb, f, indent=1)
+            os.replace(sbp + ".tmp", sbp)
+            return self.send(200, {"ok": True})
         m = re.fullmatch(r"/api/story/([\w-]+)", path)
         if m:
             sb = body.get("storyboard")
