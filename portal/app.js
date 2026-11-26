@@ -51,7 +51,7 @@ function fieldHtml(f) {
       const [v, t] = Array.isArray(o) ? o : [o, o];
       return `<option value="${esc(v)}"${v === f.value ? " selected" : ""}>${esc(t)}</option>`;
     }).join("")}</select></label>${f.note ? `<p class="notice small full" id="preset-note"></p>` : ""}`;
-    case "file": return `<label class="${cls}">${esc(f.label)}${help}<input type="file" name="${f.k}" accept="image/png,image/jpeg,image/webp"></label>`;
+    case "file": return `<label class="${cls}"><span data-lbl>${esc(f.label)}</span>${help}<input type="file" name="${f.k}" accept="image/png,image/jpeg,image/webp"></label>`;
     case "files": return `<label class="full">${esc(f.label)}${help}<input type="file" name="${f.k}" multiple accept="image/png,image/jpeg,image/webp"></label>`;
   }
 }
@@ -147,7 +147,7 @@ const pages = {
         F.text("name", "Name", { help: "Output folder (default: from the description)" }),
         F.check("prop", "Prop, not a character", { help: "No pose template, no rig" }),
         F.sel("template", "Pose template", await templateOptions(), { help: "Body shape and pose for characters" }),
-        F.file("image", "Use this image", { help: "Skip the concept step" }),
+        F.file("image", "Use this A-pose image", { help: "Skips the drawing step" }),
         F.num("options", "Concept options", { min: 1, max: 6, step: 1, ph: "1", help: "Draw several, pick the best automatically" }),
         F.sel("resolution", "TRELLIS resolution", [["", "default"], "512", "1024", "1536"], { help: "Default: 1024 characters, 512 props" }),
         F.num("height", "Height (m)", { min: 0.05, max: 50, ph: "1.8 / 1.0" }),
@@ -157,7 +157,20 @@ const pages = {
         F.check("no_rig", "Skip rigging"),
       ],
     });
-    presetHints($("#tool-form"));
+    const form = $("#tool-form");
+    presetHints(form);
+    // The image field means "a ready-posed character" or "an object", depending on Prop
+    const img = form.elements.image.closest("label");
+    const syncImage = () => {
+      const prop = form.elements.prop.checked;
+      img.querySelector("[data-lbl]").textContent = prop ? "Use this object image" : "Use this A-pose image";
+      img.querySelector(".help").innerHTML = prop
+        ? "Skips the drawing step. One object, plain background."
+        : `Skips the drawing step. Front view, A- or T-pose, plain background, empty hands with fingers spread. Other character art: use <a href="#art">Art to 3D</a>.`;
+    };
+    form.elements.prop.addEventListener("change", syncImage);
+    form.elements.preset.addEventListener("change", syncImage);
+    syncImage();
   },
 
   async art() {
