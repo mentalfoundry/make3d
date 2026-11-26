@@ -280,6 +280,7 @@ def build_job(tool, form, job_id):
             opt("hint", "--hint")
             opt("options", "--options", int, 1, 6)
             flag("stop", "--stop")
+            flag("face", "--face")
         else:
             args += ["--image", image, "--name", name]
             if mode == "object":

@@ -138,6 +138,7 @@ the height defaults are only a starting point.
 ```sh
 art3d my-hero.png                 # A-pose (default)
 art3d my-hero.png --pose t --name hero
+art3d me.png --face                # match the face closely (see below)
 art3d my-hero.png --stop          # just make and score the pose candidates
 art3d my-hero.png --hint "no weapon; the cloak is dark green"
 ```
@@ -293,6 +294,20 @@ A sound effect takes ~3 minutes on the development laptop, whatever its length.
 - `--resolution` 512 (props default), 1024 (characters default) or 1536. 1536 takes ~2× longer for little gain (see presets). A RAM watchdog stops TRELLIS above 14 GB so it can't crash Lemonade; if that happens, retry at 512.
 - `--seed N` for a different take.
 - `--no-rig` skips the skeleton.
+
+**Matching the face (`--face`, or "Match the face closely" in the portal).** By default the
+redraw keeps the outfit and colours but often gives a generic face, because the face is a small
+part of a full-body picture. With `--face`:
+- Flux also gets a 512 px close-up of the face (cropped using the pose detector's face points)
+  and a detailed face description from the vision model.
+- Each candidate's face is rated for likeness against the original (0–10) and ranked on that as
+  well as on the pose.
+
+In a test with the ranger art, likeness went from 7, 7 and 4 to 7, 8 and 7, and the hair colour
+came out right where it hadn't before. It adds about a minute. `face-ref.png` and
+`pose-option-N-face.png` are saved so you can compare. The 3D model still loses fine facial
+detail, because TRELLIS sees the face at only a few dozen pixels. Use it on real people only with
+their permission.
 
 ## Pose templates (`~/3d/templates/`)
 

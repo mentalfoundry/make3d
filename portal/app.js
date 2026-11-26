@@ -189,6 +189,7 @@ const pages = {
         F.sel("tex", "Texture size", [["", "default (2048)"], "512", "1024", "2048", "4096"]),
         F.num("options", "Candidates", { min: 1, max: 6, step: 1, ph: "3" }),
         F.num("seed", "Seed", { min: 0, step: 1, ph: "42" }),
+        F.check("face", "Match the face closely", { help: "Gives the redraw a close-up of the face and checks each candidate's likeness. About a minute slower. Only use for real people who have agreed to it." }),
         F.check("stop", "Stop after the pose candidates", { help: "Pick one yourself with 'Make 3D from this'" }),
       ],
     });
@@ -196,7 +197,7 @@ const pages = {
     const sync = () => {
       const m = form.elements.mode.value;
       // Redraw-only fields
-      for (const k of ["pose", "template", "hint", "options", "stop"]) form.elements[k].closest("label").hidden = m !== "pose";
+      for (const k of ["pose", "template", "hint", "options", "stop", "face"]) form.elements[k].closest("label").hidden = m !== "pose";
       // Asset types that fit: characters or objects
       const kind = m === "object" ? "prop" : "character", sel = form.elements.preset, keep = sel.value;
       sel.innerHTML = [["", "custom / default"], ...Object.entries(presetData.presets).filter(([, p]) => p.kind === kind).map(([k, p]) => [k, p.label])]

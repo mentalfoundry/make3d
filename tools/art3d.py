@@ -12,6 +12,7 @@ Examples:
   art3d my-hero.png --pose t --name hero
   art3d my-hero.png --stop                      # only make and score the candidates
   art3d my-hero.png --hint "she carries no weapon, the cloak is dark green"
+  art3d me.png --face                           # match the face closely (people who agreed to it)
   make3d --image ~/3d/out/hero/pose-option-3.png --name hero   # use a different candidate
 
 Output: ~/3d/out/<name>/  (art copy, pose-option-N.png, pose-options.png, then make3d files)
@@ -43,6 +44,23 @@ PROMPT = ("The first image is a mannequin in the target pose. The second image i
           "and framing from the first image: front view facing the viewer, full body from head to "
           "feet, arms held away from the body exactly as the mannequin. Nothing in the hands. "
           + HANDS + STYLE)
+
+FACE_ASK = ("Describe this person's face for a portrait artist who must make it recognisably "
+            "the same person, in one dense paragraph: face shape, jaw and chin, cheekbones, eye "
+            "shape and colour, eyebrows, nose shape and size, mouth and lips, skin tone, apparent "
+            "age and wrinkles, facial hair, hairline and hairstyle, glasses or other features. "
+            "Reply with the description only.")
+
+FACE_PROMPT = ("The third image is a close-up of the character's face. The face is the most "
+               "important part: it must be this exact person, recognisably the same at a glance, "
+               "with the same face shape, eyes, nose, mouth, skin tone, age, hair and glasses. Do "
+               "not make it a generic, younger or idealised face. Face details: {face} ")
+
+LIKENESS = ("Image 1 is the face of a character from concept art. Image 2 is a face from a "
+            "redrawing of that character. How closely does face 2 match face 1 in identity "
+            "(face shape, eyes, nose, mouth, skin tone, age, hair, glasses)? Ignore lighting, "
+            "angle, image quality and art style. Reply with JSON only: "
+            '{"likeness": 0-10, "note": "a few words on the biggest difference"}')
 
 KEY = ["l_shoulder", "r_shoulder", "l_elbow", "r_elbow", "l_wrist", "r_wrist",
        "l_hip", "r_hip", "l_knee", "r_knee", "l_ankle", "r_ankle"]
@@ -83,6 +101,39 @@ def score(cand, ref):
     return s, ", ".join(notes)
 
 
+def face_crop(img, j, out):
+    """Square crop around the face from pose landmarks, enlarged to 512 px. False if no face."""
+    if not j:
+        return False
+    b, (W, H) = j["body"], j["size"]
+    pts = [(b[n][0] * W, b[n][1] * H) for n in ("nose", "l_eye", "r_eye", "l_ear", "r_ear", "mouth_l", "mouth_r")
+           if n in b and b[n][2] > 0.3]
+    if len(pts) < 4:
+        return False
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+    half = max(max(xs) - min(xs), max(ys) - min(ys), 8) * 1.3   # ears to ears, plus hair and chin
+    cy -= half * 0.15
+    box = [int(cx - half), int(cy - half), int(cx + half), int(cy + half)]
+    r = subprocess.run([VENV_PY, "-I", "-c", """
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert('RGB')
+im.crop(tuple(int(v) for v in sys.argv[3:7])).resize((512, 512), Image.LANCZOS).save(sys.argv[2])
+""", img, out, *map(str, box)], capture_output=True, text=True)
+    return r.returncode == 0
+
+
+def likeness(art_face, cand_face):
+    """0-10 from the vision model, or None if it can't tell."""
+    try:
+        txt = lemon.describe_image([art_face, cand_face], LIKENESS, max_tokens=200)
+        d = json.loads(txt[txt.index("{"):txt.rindex("}") + 1])
+        return max(0.0, min(10.0, float(d.get("likeness")))), str(d.get("note", ""))[:80]
+    except Exception as e:
+        return None, f"likeness check failed: {str(e)[:80]}"
+
+
 def contact_sheet(paths, labels, out):
     sheet = [VENV_PY, "-I", "-c", """
 import sys
@@ -114,6 +165,9 @@ def main():
     ap.add_argument("--hint", default="", help="extra description to add (fixes what the vision model gets wrong)")
     ap.add_argument("--options", type=int, default=3, help="candidates to make (default 3)")
     ap.add_argument("--stop", action="store_true", help="stop after making and scoring the candidates")
+    ap.add_argument("--face", action="store_true",
+                    help="match the face closely: adds a face close-up and a detailed face description "
+                         "to the redraw, and ranks candidates by likeness too (about 1 min slower)")
     ap.add_argument("--seed", type=int, default=42)
     a, passthrough = ap.parse_known_args()   # --resolution, --height, --tris, --tex, --no-rig go to make3d
 
@@ -145,6 +199,23 @@ def main():
     print(f"  {desc}")
     open(os.path.join(out, "description.txt"), "w").write(desc + "\n")
 
+    # 1b. Face (optional)
+    art_face, face_text = None, ""
+    if a.face:
+        log("face: close-up and description")
+        art_face = os.path.join(out, "face-ref.png")
+        if face_crop(art, joints(art, os.path.join(out, "art-joints.json")), art_face):
+            print(f"  {art_face}")
+        else:
+            art_face = None
+            print("  no face found in the art (too small, hidden or turned away); "
+                  "using the description only")
+        try:
+            face_text = lemon.describe_image(art_face or art, FACE_ASK).strip()
+            print(f"  {face_text}")
+        except Exception as e:
+            print(f"  (vision model unavailable: {str(e)[:200]})")
+
     # 2. Template
     if a.template:
         tpl = a.template if os.path.exists(a.template) else os.path.join(HOME3D, "templates", f"{a.template}.png")
@@ -166,13 +237,27 @@ def main():
     results = []
     for i in range(a.options):
         path = os.path.join(out, f"pose-option-{i + 1}.png")
-        open(path, "wb").write(lemon.edit_image(PROMPT.format(desc=desc), [tpl, art], size=size,
-                                                seed=a.seed + i)[0])
-        s, note = score(joints(path, os.path.join(out, f"pose-option-{i + 1}.json")), ref)
+        prompt, images = PROMPT.format(desc=desc), [tpl, art]
+        if a.face:
+            prompt = prompt.replace("Nothing in the hands. ",
+                                    "Nothing in the hands. " + FACE_PROMPT.format(face=face_text or "see the images."))
+            if art_face:
+                images.append(art_face)
+        open(path, "wb").write(lemon.edit_image(prompt, images, size=size, seed=a.seed + i)[0])
+        cj = joints(path, os.path.join(out, f"pose-option-{i + 1}.json"))
+        s, note = score(cj, ref)
+        if art_face:   # likeness counts too: a perfect pose with the wrong face loses
+            cf = os.path.join(out, f"pose-option-{i + 1}-face.png")
+            like, why = likeness(art_face, cf) if face_crop(path, cj, cf) else (None, "no face found")
+            if like is not None:
+                s += 0.02 * (10 - like)
+                note += f", likeness {like:.0f}/10" + (f" ({why})" if why else "")
+            else:
+                note += f", {why}"
         results.append((s, i + 1, path, note))
         print(f"  option {i + 1}: score {s:.3f} ({note})")
     for f in os.listdir(out):
-        if re.fullmatch(r"(pose-option-\d+|template-joints)\.json", f):
+        if re.fullmatch(r"(pose-option-\d+|template-joints|art-joints)\.json", f):
             os.remove(os.path.join(out, f))
     best = min(results)
     contact_sheet([art] + [r[2] for r in results],
