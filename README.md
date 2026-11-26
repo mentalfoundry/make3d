@@ -93,6 +93,46 @@ Results go to `out/<name>/` in the repo folder (`~/3d/out/<name>/`):
 | `preview.png` | Front, ¾, side and back renders |
 | `<name>-joints.png` | Where the rigger found the joints (for checking) |
 
+### Asset presets: `--preset`
+
+Pick what kind of asset it is and the triangle budget, texture size, TRELLIS detail and
+height follow. Anything you set yourself (`--tris`, `--tex`, `--resolution`, `--height`,
+`--template`) overrides the preset.
+
+```sh
+make3d "an old fisherman with a pipe" --preset npc
+make3d "a stone watchtower with a wooden roof" --preset structure-complex
+make3d "a hero knight" --preset hero --tex 2048      # preset, but smaller textures
+```
+
+| Preset | For | Triangles | Texture | TRELLIS | Height | Rig |
+|---|---|---|---|---|---|---|
+| `hero` | Player character, close-ups | 60,000 | 2048 | 1024 | 1.8 m | yes |
+| `side` | Companions, named characters | 30,000 | 2048 | 1024 | 1.8 m | yes |
+| `npc` | Townsfolk, guards, crowds | 12,000 | 1024 | 1024 | 1.8 m | yes |
+| `monster` | Humanoid monsters (orcs, trolls) | 40,000 | 2048 | 1024 | 2.2 m, stocky template | yes |
+| `creature` | Non-humanoid beasts, dragons | 30,000 | 2048 | 1024 | 1.5 m | no |
+| `prop-simple` | Cups, books, rocks, crates | 1,500 | 512 | 512 | 0.5 m | no |
+| `prop-complex` | Hero weapons, detailed furniture | 10,000 | 2048 | 1024 | 1.0 m | no |
+| `structure-simple` | Huts, walls, wells, stalls | 6,000 | 2048 | 1024 | 4 m | no |
+| `structure-complex` | Towers, temples, gates | 40,000 | 2048 | 1024 | 10 m | no |
+
+No preset means 30,000 triangles and 2048 textures. The numbers are for PC and console;
+for mobile, halve the triangles and go one texture size down. Set `--height` to the real size:
+the height defaults are only a starting point.
+
+- **Creatures have no rig** because the auto-rigger only knows human skeletons.
+  Rig them in Blender or with a tool that handles quadrupeds.
+- **Texture detail is capped by TRELLIS, so no preset goes above 2048.** TRELLIS gives
+  2048 textures at resolution 1024 and 1024 textures at 512. The bake copies colour from those,
+  so `--tex 4096` gives a 2.5× bigger file with no new detail. Use 4096 only if you'll paint
+  over or upscale the textures afterwards.
+- **`--resolution 1536` wasn't worth it in testing.** It took about 14 minutes instead of
+  5–8, and produced the same 2048 textures and about the same triangle count (~272k).
+- **Structures are one mesh with one texture.** That's fine for a hut or a single building.
+  Real game levels build large structures from modular, tiling pieces, so for a castle
+  make the pieces (wall, tower, gate) separately.
+
 ## From your own art: `art3d`
 
 ```sh
@@ -240,8 +280,8 @@ A sound effect takes ~3 minutes on the development laptop, whatever its length.
   for characters: A- or T-pose, empty hands with fingers spread and gaps between them,
   or the hands get a single bone each).
 - `--raw ~/3d/out/<name>/raw.glb --name <name>` redoes only the Blender steps (~1 min).
-- `--tris 15000` / `--tex 1024` for lighter models; `--height 2.4` for big creatures.
-- `--resolution` 512 (props default), 1024 (characters default) or 1536. Higher = more detail, time and RAM. A RAM watchdog stops TRELLIS above 14 GB so it can't crash Lemonade; if that happens, retry at 512.
+- `--preset npc` etc. (see [Asset presets](#asset-presets---preset)), or set `--tris 15000` / `--tex 1024` directly; `--height 2.4` for big creatures.
+- `--resolution` 512 (props default), 1024 (characters default) or 1536. 1536 takes ~2× longer for little gain (see presets). A RAM watchdog stops TRELLIS above 14 GB so it can't crash Lemonade; if that happens, retry at 512.
 - `--seed N` for a different take.
 - `--no-rig` skips the skeleton.
 
@@ -250,6 +290,13 @@ A sound effect takes ~3 minutes on the development laptop, whatever its length.
 `a-pose-male`, `a-pose-female`, `a-pose-stocky`, `t-pose-male`, `t-pose-female`.
 The concept copies the template's pose **and body build**, so pick the closest one.
 All were generated with Flux (`tools/make_templates.py`), so they're free to use.
+
+**A-pose or T-pose?** Use the A-pose (the default) unless your engine or animation pack needs a T-pose.
+- In an A-pose the shoulders are close to how they rest, so they deform better when animated.
+- The A-pose figure is tall and narrow (640×1024), so TRELLIS gets more pixels on the body,
+  face and hands. The arms-out T-pose needs a square 1024×1024 image, so the figure is smaller in it.
+- The T-pose leaves the armpits fully open, which helps with very bulky arms or capes.
+- Unity, Unreal and Mixamo retarget animations from either pose.
 `templates/test-only/` (not in git) holds a watermarked stock image used for early testing: don't use it for real assets.
 
 ## The rig

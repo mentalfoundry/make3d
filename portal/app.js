@@ -50,7 +50,7 @@ function fieldHtml(f) {
     case "sel": return `<label class="${cls}">${esc(f.label)}${help}<select name="${f.k}">${f.options.map(o => {
       const [v, t] = Array.isArray(o) ? o : [o, o];
       return `<option value="${esc(v)}"${v === f.value ? " selected" : ""}>${esc(t)}</option>`;
-    }).join("")}</select></label>`;
+    }).join("")}</select></label>${f.note ? `<p class="notice small full" id="preset-note"></p>` : ""}`;
     case "file": return `<label class="${cls}">${esc(f.label)}${help}<input type="file" name="${f.k}" accept="image/png,image/jpeg,image/webp"></label>`;
     case "files": return `<label class="full">${esc(f.label)}${help}<input type="file" name="${f.k}" multiple accept="image/png,image/jpeg,image/webp"></label>`;
   }
@@ -95,6 +95,39 @@ function toolPage({ title, intro, tool, fields, extra = {}, note }) {
   };
 }
 
+let presetData = null;
+async function presetOptions(characterOnly) {
+  presetData = presetData || await api("api/presets");
+  return [["", "custom / default"], ...Object.entries(presetData.presets)
+    .filter(([, p]) => !characterOnly || p.kind === "character").map(([k, p]) => [k, p.label])];
+}
+
+// Show the chosen preset's numbers as placeholders: empty fields use them, typed values override.
+function presetHints(form) {
+  const sel = form.elements.preset, note = $("#preset-note");
+  const update = () => {
+    const p = presetData.presets[sel.value], d = presetData.defaults;
+    const set = (k, v) => { const el = form.elements[k]; if (!el) return;
+      if (el.tagName === "SELECT") el.options[0].textContent = v ? `preset (${v})` : el.dataset.first;
+      else el.placeholder = v ?? el.dataset.ph; };
+    for (const k of ["tris", "tex", "resolution", "height"]) {
+      const el = form.elements[k]; if (!el) continue;
+      if (el.dataset.ph === undefined) el.dataset.ph = el.placeholder ?? "";
+      if (el.tagName === "SELECT" && el.dataset.first === undefined) el.dataset.first = el.options[0].textContent;
+      set(k, p ? p[k] : undefined);
+    }
+    if (form.elements.prop) { form.elements.prop.checked = p ? p.kind === "prop" : false; }
+    const tpl = form.elements.template;
+    if (tpl && form.elements.prop) {   // 3D form only; art3d picks its template from the art
+      if (p?.template && !tpl.value) { tpl.value = p.template; tpl.dataset.byPreset = "1"; }
+      else if (!p?.template && tpl.dataset.byPreset) { tpl.value = ""; delete tpl.dataset.byPreset; }
+    }
+    if (note) note.textContent = p ? `${p.note}. ${p.tris.toLocaleString()} triangles, ${p.tex}px textures` +
+      (p.kind === "prop" ? ", no rig." : ", rigged.") + " Fill in a field to override it." : `Defaults: ${d.tris.toLocaleString()} triangles, ${d.tex}px textures.`;
+  };
+  sel.onchange = update; update();
+}
+
 let templateList = null;
 async function templateOptions() {
   templateList = templateList || await api("api/templates");
@@ -107,9 +140,10 @@ const pages = {
   async "3d"() {
     toolPage({
       title: "Text to 3D", tool: "make3d",
-      intro: "Describe a character or prop. Flux draws a concept in an A-pose, TRELLIS builds the mesh, Blender cleans, textures and rigs it. Expect 10–20 minutes for a character.",
+      intro: "Describe a character or object and pick what kind of asset it is. Flux draws a concept in an A-pose, TRELLIS builds the mesh, Blender cleans, textures and rigs it. Expect 10–20 minutes for a character.",
       fields: [
         F.area("description", "Description", { ph: "a dwarf blacksmith with a leather apron and a braided red beard", help: "Leave empty if you upload an image instead." }),
+        F.sel("preset", "Asset type", await presetOptions(), { help: "Sets triangles, textures, detail and size", note: true }),
         F.text("name", "Name", { help: "Output folder (default: from the description)" }),
         F.check("prop", "Prop, not a character", { help: "No pose template, no rig" }),
         F.sel("template", "Pose template", await templateOptions(), { help: "Body shape and pose for characters" }),
@@ -118,11 +152,12 @@ const pages = {
         F.sel("resolution", "TRELLIS resolution", [["", "default"], "512", "1024", "1536"], { help: "Default: 1024 characters, 512 props" }),
         F.num("height", "Height (m)", { min: 0.05, max: 50, ph: "1.8 / 1.0" }),
         F.num("tris", "Triangle budget", { min: 500, max: 500000, step: 100, ph: "30000" }),
-        F.sel("tex", "Texture size", [["", "2048"], "512", "1024", "2048", "4096"]),
+        F.sel("tex", "Texture size", [["", "default (2048)"], "512", "1024", "2048", "4096"]),
         F.num("seed", "Seed", { min: 0, step: 1, ph: "42" }),
         F.check("no_rig", "Skip rigging"),
       ],
     });
+    presetHints($("#tool-form"));
   },
 
   async art() {
@@ -132,14 +167,18 @@ const pages = {
       fields: [
         F.file("art", "Character art"),
         F.text("name", "Name", { help: "Default: from the file name" }),
-        F.sel("pose", "Pose", [["a", "A-pose"], ["t", "T-pose"]]),
+        F.sel("pose", "Pose", [["a", "A-pose (recommended)"], ["t", "T-pose"]]),
+        F.sel("preset", "Character type", await presetOptions(true), { help: "Sets triangles, textures and detail", note: true }),
         F.sel("template", "Pose template", await templateOptions(), { help: "Default: picked from the art (build)" }),
         F.text("hint", "Hint", { full: true, help: "Correct anything the vision model gets wrong, e.g. 'she carries a bow on her back'" }),
+        F.num("tris", "Triangle budget", { min: 500, max: 500000, step: 100, ph: "30000" }),
+        F.sel("tex", "Texture size", [["", "default (2048)"], "512", "1024", "2048", "4096"]),
         F.num("options", "Candidates", { min: 1, max: 6, step: 1, ph: "3" }),
         F.num("seed", "Seed", { min: 0, step: 1, ph: "42" }),
         F.check("stop", "Stop after the pose candidates", { help: "Check them before spending time on 3D" }),
       ],
     });
+    presetHints($("#tool-form"));
   },
 
   async video() {

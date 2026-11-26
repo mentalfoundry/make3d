@@ -9,6 +9,8 @@ Examples:
   make3d "a knight in silver plate armour with a blue tabard"
   make3d "a stocky green goblin in ragged leather" --template a-pose-stocky
   make3d "a wooden treasure chest with iron bands" --prop
+  make3d "an old fisherman" --preset npc        # 12k tris, 1024 textures
+  make3d "a stone watchtower" --preset structure-complex
   make3d "a knight" --options 4          # just make 4 concepts to choose from
   make3d --image my-concept.png --name hero   # start from your own image
   make3d --raw ~/3d/out/hero/raw.glb --name hero   # redo only the Blender steps
@@ -20,6 +22,7 @@ import argparse, os, re, shutil, subprocess, sys, time
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, TOOLS)
 import lemon  # noqa: E402
+from presets import PRESETS, DEFAULTS  # noqa: E402
 
 HOME3D = os.path.dirname(TOOLS)   # the repo root
 BLENDER = os.environ.get("BLENDER") or os.path.expanduser("~/apps/blender/blender")
@@ -56,13 +59,19 @@ def blender(script, *args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    epilog = "presets (explicit options override them):\n" + "\n".join(
+        f"  {k:18} {p['label']}: {p['tris']:,} tris, {p['tex']} tex, res {p['resolution']}"
+        + f"  ({p['note']})" for k, p in PRESETS.items())
+    ap = argparse.ArgumentParser(description=__doc__, epilog=epilog,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("description", nargs="?", help="what to make")
     ap.add_argument("--name", help="output folder/file name (default: from the description)")
     ap.add_argument("--prop", action="store_true", help="an object, not a character (no template, no rig)")
-    ap.add_argument("--template", default="a-pose-male",
+    ap.add_argument("--preset", choices=list(PRESETS), help="asset type: sets tris, tex, resolution, height "
+                    "(and --prop for objects, creatures and structures); see the list below")
+    ap.add_argument("--template",
                     help="pose template in ~/3d/templates (a-pose-male, a-pose-female, "
-                         "a-pose-stocky, t-pose-male, ...) or a path to an image")
+                         "a-pose-stocky, t-pose-male, ...) or a path to an image (default a-pose-male)")
     ap.add_argument("--image", help="skip concept generation and use this image")
     ap.add_argument("--raw", help="skip concept and TRELLIS; reprocess this raw .glb")
     ap.add_argument("--options", type=int, default=1,
@@ -72,12 +81,21 @@ def main():
                     help="TRELLIS detail level (default 1024 characters, 512 props; "
                          "higher uses more RAM and time)")
     ap.add_argument("--height", type=float, help="final height in metres (default 1.8 characters, 1.0 props)")
-    ap.add_argument("--tris", type=int, default=30000, help="triangle budget")
-    ap.add_argument("--tex", type=int, default=2048, help="texture size")
+    ap.add_argument("--tris", type=int, help="triangle budget (default 30000)")
+    ap.add_argument("--tex", type=int, help="texture size (default 2048)")
     ap.add_argument("--no-rig", action="store_true")
     a = ap.parse_args()
     if not a.description and not a.image and not a.raw:
         ap.error("give a description, --image or --raw")
+    p = PRESETS.get(a.preset, {})
+    a.prop = a.prop or p.get("kind") == "prop"
+    for k in ("tris", "tex", "resolution", "height"):
+        if getattr(a, k) is None:
+            setattr(a, k, p.get(k) or DEFAULTS.get(k))
+    a.template = a.template or p.get("template") or "a-pose-male"
+    if p:
+        log(f"preset {a.preset} ({p['label']}): {a.tris} tris, {a.tex} textures, "
+            f"{'prop, no rig' if a.prop else 'character'}")
 
     name = a.name or re.sub(r"[^a-z0-9]+", "-", (a.description or "model").lower()).strip("-")[:40]
     out = os.path.join(HOME3D, "out", name)

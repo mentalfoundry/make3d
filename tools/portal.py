@@ -32,6 +32,7 @@ NAMED_DIRS = {"video", "sound", "story", "portal"}   # out/<x> that are not 3D m
 
 sys.path.insert(0, TOOLS)
 import lemon   # noqa: E402  (model names only; requests go through the configured URL)
+from presets import PRESETS, DEFAULTS  # noqa: E402
 
 MODELS_NEEDED = {
     lemon.IMAGE_MODEL: "concept art, keyframes",
@@ -204,6 +205,7 @@ def build_job(tool, form, job_id):
         if desc:
             args.append(desc)
         args += ["--name", name]
+        opt("preset", "--preset", choices=list(PRESETS))
         flag("prop", "--prop")
         opt("template", "--template", choices=templates())
         if image:
@@ -224,6 +226,9 @@ def build_job(tool, form, job_id):
             raise BadRequest("choose another name")
         args += [_save_upload(form["art"], up_dir, "art"), "--name", name]
         opt("pose", "--pose", choices=["a", "t"])
+        opt("preset", "--preset", choices=[k for k, p in PRESETS.items() if p["kind"] == "character"])
+        opt("tris", "--tris", int, 500, 500000)
+        opt("tex", "--tex", int, 256, 8192, choices=[512, 1024, 2048, 4096])
         opt("template", "--template", choices=templates())
         opt("hint", "--hint")
         opt("options", "--options", int, 1, 6)
@@ -605,6 +610,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send(200, library())
         if path == "/api/templates":
             return self.send(200, templates())
+        if path == "/api/presets":
+            return self.send(200, {"presets": PRESETS, "defaults": DEFAULTS})
         m = re.fullmatch(r"/api/story/([\w-]+)", path)
         if m:
             info = story_info(m.group(1))
