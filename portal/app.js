@@ -624,7 +624,7 @@ async function storyPage(name) {
       ? `<a href="${outUrl(`story/${name}/${f}`)}" target="_blank"><img src="${outUrl(`story/${name}/${f}`)}?v=${Math.round(info.mtimes[f] || 0)}" alt="keyframe ${i}"></a>`
       : `<div class="thumb" style="aspect-ratio:3/2;background:var(--panel-2)"></div>`;
   };
-  const kfs = sb.keyframes.map((k, i) => `<div class="kf" data-card="${i}"><div class="kf-img">${imgHtml(i)}<div class="busy" hidden>Redrawing…</div></div><div class="body stack">
+  const kfs = sb.keyframes.map((k, i) => `<div class="kf" data-card="${i}"><div class="kf-img">${imgHtml(i)}<div class="busy" hidden><div class="spinner" aria-hidden="true"></div><span class="busy-text">Redrawing…</span></div></div><div class="body stack">
       <div class="row spread"><b>Keyframe ${i} · ${k.t}s</b><button class="small ghost undo" data-i="${i}" ${info.previous.includes(i) ? "" : "hidden"} title="Swap back to the version before the last redraw (click again to swap forward)">Undo redraw</button></div>
       <div class="flagbox">${flagHtml(i)}</div>
       <label class="small">What it shows<textarea data-kf="${i}" aria-label="keyframe ${i} description">${esc(k.image)}</textarea></label>
@@ -674,7 +674,6 @@ async function storyPage(name) {
     await api("api/run/storyboard", { name, ...body });
     refresh();
   };
-  const pending = new Set();   // keyframes waiting for a redraw we started here
   main.querySelectorAll(".go").forEach(b => b.onclick = async () => {
     const i = +b.dataset.i, err = main.querySelector(`[data-err="${i}"]`);
     const note = main.querySelector(`[data-note="${i}"]`).value.trim();
@@ -683,14 +682,13 @@ async function storyPage(name) {
     if (adjust && !note) { err.textContent = "Say what to change."; return; }
     try {
       await run({ step: "frames", only: String(i), note, adjust });
-      pending.add(i); main.querySelector(`[data-card="${i}"] .busy`).hidden = false;
       b.closest("details").open = false;
     } catch (e) { err.textContent = e.message; }
   });
   main.querySelectorAll(".undo").forEach(b => b.onclick = async () => {
     try { await api(`api/story/${encodeURIComponent(name)}/undo/${b.dataset.i}`, {}); refresh(); } catch (e) { alert(e.message); }
   });
-  $("#redraw-all").onclick = () => confirm("Redraw every keyframe?") && run({ step: "frames" }).then(() => sb.keyframes.forEach((_, i) => { pending.add(i); main.querySelector(`[data-card="${i}"] .busy`).hidden = false; })).catch(e => alert(e.message));
+  $("#redraw-all").onclick = () => confirm("Redraw every keyframe?") && run({ step: "frames" }).catch(e => alert(e.message));
   const rf = $("#render-form");
   rf.onsubmit = async e => {
     e.preventDefault(); $("#render-err").textContent = "";
@@ -708,6 +706,23 @@ async function storyPage(name) {
       `<span class="status ${j.status}">${j.status}</span> ${esc(j.title)} · <a href="#jobs/${j.id}">log</a>`).join("<br>")}
       <span class="muted"> This page updates every 30 seconds.</span></div>` : "";
   };
+  // Spinner + timer on every keyframe an active job is drawing (from the server, so it's
+  // right after a reload or on another device too). The timer ticks locally every second.
+  const fmtClock = sec => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
+  const drawBusy = () => {
+    const now = Date.now() / 1000;
+    sb.keyframes.forEach((_, i) => {
+      const card = main.querySelector(`[data-card="${i}"]`);
+      if (!card) return;
+      const j = info.active.find(j => j.frames === "all" || (Array.isArray(j.frames) && j.frames.includes(i)));
+      const busy = card.querySelector(".busy");
+      busy.hidden = !j;
+      if (!j) return;
+      busy.classList.toggle("queued", j.status === "queued");
+      busy.querySelector(".busy-text").textContent = j.status === "queued" ? "Queued…"
+        : `${/adjust/.test(j.title) ? "Adjusting" : "Redrawing"}… ${j.started ? fmtClock(now - j.started) : ""}`;
+    });
+  };
   async function refresh() {
     let next;
     try { next = await api(`api/story/${encodeURIComponent(name)}`); } catch { return; }
@@ -720,9 +735,7 @@ async function storyPage(name) {
       const f = kfile(i);
       if (old.mtimes[f] !== next.mtimes[f] || old.keyframes.includes(f) !== next.keyframes.includes(f)) {
         card.querySelector(".kf-img > a, .kf-img > .thumb").outerHTML = imgHtml(i);
-        pending.delete(i);
       }
-      if (!pending.has(i) || !next.active.length) { card.querySelector(".busy").hidden = true; pending.delete(i); }
       card.querySelector(".flagbox").innerHTML = flagHtml(i);
       card.querySelector(".undo").hidden = !next.previous.includes(i);
       card.querySelector(`input[name="mode-${i}"][value="adjust"]`).disabled = !next.keyframes.includes(f);
@@ -732,10 +745,13 @@ async function storyPage(name) {
     const vids = next.videos.map(v => v + next.mtimes[v]).join();
     if (vids !== old.videos.map(v => v + old.mtimes[v]).join()) $("#sb-vids").innerHTML = vidsHtml();
     showActive();
+    drawBusy();
     $("#sb-polled").textContent = `checked ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
   }
   showActive();
+  drawBusy();
   timers.push(setInterval(refresh, 30000));
+  timers.push(setInterval(() => { if (info.active.length) drawBusy(); }, 1000));
 }
 
 // ------------------------------------------------------------------ settings

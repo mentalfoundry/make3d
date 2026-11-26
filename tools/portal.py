@@ -799,9 +799,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             info = story_info(m.group(1))
             if not info:
                 return self.send(404, {"error": "no such storyboard"})
-            info["active"] = [{"id": j["id"], "title": j["title"], "status": j["status"]}
-                              for j in self.server.jobs.list()
-                              if j["outdir"] == f"story/{info['name']}" and j["status"] in ("queued", "running")]
+            info["active"] = []
+            for j in self.server.jobs.list():
+                if j["outdir"] != f"story/{info['name']}" or j["status"] not in ("queued", "running"):
+                    continue
+                a = j["args"]
+                frames = None   # keyframes this job draws: a list, "all", or None (not a frames job)
+                if a and a[0] in ("frames", "new"):
+                    frames = [int(v) for v in a[a.index("--only") + 1].split(",")] if "--only" in a else "all"
+                info["active"].append({"id": j["id"], "title": j["title"], "status": j["status"],
+                                       "started": j.get("started"), "created": j["created"], "frames": frames})
             return self.send(200, info)
         if path == "/api/local":
             return self.send(200, local_check())
