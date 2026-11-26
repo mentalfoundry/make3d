@@ -413,6 +413,9 @@ bpy.ops.export_scene.gltf(filepath=glb, export_format="GLB", use_selection=True)
 bpy.ops.export_scene.fbx(filepath=fbx, use_selection=True, path_mode="COPY",
                          embed_textures=True, apply_scale_options="FBX_SCALE_ALL")
 bpy.context.preferences.filepaths.save_version = 0
+for img in bpy.data.images:   # self-contained: make3d copies this .blend up a folder for props
+    if img.source == "FILE" and img.filepath and not img.packed_file:
+        img.pack()
 bpy.ops.wm.save_as_mainfile(filepath=blend, compress=True)
 log(f"exported {glb}, {fbx}, {blend}")
 print(f"GAMEREADY_DONE tris={tri_count(low)} height={dims.z:.2f}")

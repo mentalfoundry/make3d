@@ -314,6 +314,12 @@ Everything below also runs from a browser, from any machine on your network: for
 each tool, a job queue with live logs, a library with 3D, video and audio previews, and a
 storyboard editor (edit keyframe and segment text, redraw single keyframes, render).
 
+In the library you can rename or delete anything. Renaming changes the folder and the files named
+after it (`knight.glb` becomes `hero.glb`), but not the textures, because the `.blend` files point
+at them by name. Delete moves the item to the desktop Trash (`~/.local/share/Trash`) on the
+portal machine, so it can be restored from the file manager. Anything a job is still working on
+can't be renamed or deleted until the job finishes.
+
 ```sh
 ./setup.sh --portal                  # installs the make3d-portal user service (127.0.0.1:7870)
 portal --set-password                # choose the login password (8+ characters)

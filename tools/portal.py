@@ -366,6 +366,19 @@ class Jobs:
         self.queue.put(jid)
         return j
 
+    def busy(self, outdir):
+        with self.lock:
+            return any(j["outdir"] == outdir and j["status"] in ("queued", "running") for j in self.jobs.values())
+
+    def moved(self, old, new):
+        """Point finished jobs at an item's new folder (None: it was deleted)."""
+        with self.lock:
+            for j in self.jobs.values():
+                if j["outdir"] == old:
+                    j["outdir"] = new if new else old
+                    j["removed"] = new is None
+                    self._save(j)
+
     def cancel(self, jid):
         with self.lock:
             j = self.jobs.get(jid)
@@ -471,6 +484,67 @@ def library():
     allitems = (items(OUT, "model") + items(os.path.join(OUT, "video"), "video") +
                 items(os.path.join(OUT, "sound"), "sound") + items(os.path.join(OUT, "story"), "story"))
     return sorted(allitems, key=lambda x: x["mtime"], reverse=True)
+
+
+def library_item(path):
+    """The library entry at this out/-relative path, or a 404-style error. Only top-level items."""
+    path = str(path or "").strip("/")
+    for x in library():
+        if x["path"] == path:
+            return x
+    raise BadRequest("no such item in the library")
+
+
+TRASH = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "Trash")
+
+
+def move_to_trash(src):
+    """Freedesktop trash, so the desktop's file manager can restore it."""
+    files, info = os.path.join(TRASH, "files"), os.path.join(TRASH, "info")
+    os.makedirs(files, exist_ok=True)
+    os.makedirs(info, exist_ok=True)
+    base = os.path.basename(src)
+    for i in range(1000):
+        name = base if i == 0 else f"{base}.{i}"
+        try:   # claim the name atomically, as the spec asks
+            fd = os.open(os.path.join(info, name + ".trashinfo"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise BadRequest("the trash is too full of items with this name")
+    with os.fdopen(fd, "w") as f:
+        f.write(f"[Trash Info]\nPath={urllib.parse.quote(os.path.abspath(src))}\n"
+                f"DeletionDate={time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
+    try:
+        shutil.move(src, os.path.join(files, name))
+    except OSError:
+        os.unlink(os.path.join(info, name + ".trashinfo"))
+        raise
+    return name
+
+
+def rename_item(item, new):
+    """Rename an output folder and the files named after it (knight.glb, knight-front.png, ...).
+    Textures keep their names: the .blend files point at them."""
+    old, src = item["name"], os.path.join(OUT, item["path"])
+    new = slug(new, 60)
+    if not new:
+        raise BadRequest("give a name using letters, numbers or dashes")
+    if new == old:
+        return item["path"]
+    if item["kind"] == "model" and new in NAMED_DIRS:
+        raise BadRequest("that name is reserved, choose another")
+    dst = os.path.join(os.path.dirname(src), new)
+    if os.path.exists(dst):
+        raise BadRequest(f"'{new}' already exists")
+    os.rename(src, dst)
+    for root, dirs, files in os.walk(dst):
+        dirs[:] = [d for d in dirs if d != "textures"]
+        for f in files:
+            if f.startswith(old) and f[len(old):len(old) + 1] in (".", "-", "_"):
+                os.rename(os.path.join(root, f), os.path.join(root, new + f[len(old):]))
+    return os.path.relpath(dst, OUT)
 
 
 def story_info(name):
@@ -664,6 +738,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 json.dump(sb, f, indent=1)
             os.replace(p + ".tmp", p)
             return self.send(200, {"ok": True})
+        if path in ("/api/library/rename", "/api/library/delete"):
+            item = library_item(body.get("path"))
+            if self.server.jobs.busy(item["path"]):
+                raise BadRequest("a job is still working on this; wait for it or cancel it first")
+            if path.endswith("delete"):
+                move_to_trash(os.path.join(OUT, item["path"]))
+                self.server.jobs.moved(item["path"], None)
+                return self.send(200, {"ok": True})
+            newpath = rename_item(item, str(body.get("name", "")))
+            self.server.jobs.moved(item["path"], newpath)
+            return self.send(200, {"ok": True, "path": newpath, "name": os.path.basename(newpath)})
         if path == "/api/settings":
             with _cfg_lock:
                 cfg = load_config()

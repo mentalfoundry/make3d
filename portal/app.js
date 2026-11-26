@@ -293,6 +293,7 @@ const pages = {
       $("#tiles").innerHTML = items.length ? items.map(tile).join("") : `<p class="muted">Nothing here yet.</p>`;
     };
     $("#kind").onchange = draw; draw();
+    bindItemButtons($("#tiles"), () => pages.library());
   },
 
   async settings() { settingsPage(); },
@@ -303,8 +304,37 @@ const KIND = { model: "3D", video: "Video", sound: "Sound", story: "Storyboard" 
 function tile(x) {
   const href = x.kind === "story" ? `#story/${encodeURIComponent(x.name)}` : `#library/${x.path}`;
   const bg = x.thumb ? ` style="background-image:url('${outUrl(x.thumb)}')"` : "";
-  return `<a class="tile" href="${href}" data-path="${esc(x.path)}"><div class="thumb"${bg}>${x.thumb ? "" : ICON[x.kind]}</div>
-    <div class="cap"><b>${esc(x.name)}</b><span class="kind">${KIND[x.kind]} · ${fmtTime(x.mtime)}</span></div></a>`;
+  return `<div class="tile"><a href="${href}"><div class="thumb"${bg}>${x.thumb ? "" : ICON[x.kind]}</div></a>
+    <div class="cap"><a href="${href}"><b>${esc(x.name)}</b><span class="kind">${KIND[x.kind]} · ${fmtTime(x.mtime)}</span></a>
+    ${itemButtons(x.path, x.name)}</div></div>`;
+}
+
+// Rename / delete for a library item (a top-level output folder)
+function itemButtons(path, name) {
+  return `<span class="item-actions"><button class="ghost small" data-act="rename" data-path="${esc(path)}" data-name="${esc(name)}" title="Rename">Rename</button>` +
+    `<button class="ghost small danger" data-act="delete" data-path="${esc(path)}" data-name="${esc(name)}" title="Move to the trash">Delete</button></span>`;
+}
+
+// One handler for every rename/delete button on the page. onDone(newPath|null) after a change.
+function bindItemButtons(root, onDone) {
+  root.addEventListener("click", async e => {
+    const b = e.target.closest("button[data-act]");
+    if (!b) return;
+    e.preventDefault();
+    const { act, path, name } = b.dataset;
+    try {
+      if (act === "rename") {
+        const n = prompt(`New name for "${name}" (letters, numbers, dashes):`, name);
+        if (!n || n.trim() === name) return;
+        const r = await api("api/library/rename", { path, name: n });
+        onDone(r.path, r.name);
+      } else {
+        if (!confirm(`Move "${name}" and all its files to the trash?\nYou can restore it from your file manager's Trash on the portal machine.`)) return;
+        await api("api/library/delete", { path });
+        onDone(null);
+      }
+    } catch (err) { alert(err.message); }
+  });
 }
 
 // ------------------------------------------------------------------ outputs
@@ -365,7 +395,11 @@ async function outputsHtml(rel) {
 async function folderPage(path) {
   const parts = path.split("/");
   const crumbs = parts.map((p, i) => i < parts.length - 1 ? `<a href="#library/${parts.slice(0, i + 1).join("/")}">${esc(p)}</a>` : `<b>${esc(p)}</b>`).join(" / ");
-  main.innerHTML = `<p class="small"><a href="#library">Library</a> / ${crumbs}</p><div id="out">Loading…</div>`;
+  const lib = parts.length <= 2 ? await api("api/library") : [];
+  const item = lib.find(x => x.path === path);
+  main.innerHTML = `<div class="row spread"><p class="small" style="margin:0"><a href="#library">Library</a> / ${crumbs}</p>
+    ${item ? itemButtons(item.path, item.name) : ""}</div><div id="out" style="margin-top:12px">Loading…</div>`;
+  if (item) bindItemButtons(main, p => { location.hash = p ? `#library/${p}` : "#library"; });
   $("#out").innerHTML = await outputsHtml(path);
 }
 
@@ -440,7 +474,8 @@ async function storyPage(name) {
   const vids = rankFiles(info.videos.filter(f => !f.endsWith(".ogv")).map(n => ({ name: n })))
     .map(f => mediaHtml(`story/${name}/${f.name}`, f.name)).join("");
   main.innerHTML = `<div class="stack">
-    <p class="small"><a href="#story">Storyboards</a> / <b>${esc(name)}</b> · <a href="#library/story/${encodeURIComponent(name)}">all files</a></p>
+    <div class="row spread"><p class="small" style="margin:0"><a href="#story">Storyboards</a> / <b>${esc(name)}</b> · <a href="#library/story/${encodeURIComponent(name)}">all files</a></p>
+      ${itemButtons(`story/${name}`, name)}</div>
     <div><h2>${esc(sb.title || name)}</h2><p class="muted">${esc(sb.idea || "")}</p>
       <p class="small muted">Characters: ${esc(sb.characters)}<br>Setting: ${esc(sb.setting)}<br>Style: ${esc(sb.style)}</p></div>
     ${vids ? `<div class="media-grid">${vids}</div>` : ""}
@@ -458,6 +493,7 @@ async function storyPage(name) {
     <div class="card stack"><h3>Segments</h3>${segs}</div>
     <div class="row"><button class="primary" id="save">Save text changes</button><span class="muted small">Then redraw the keyframes you changed. Segments re-render automatically when their text changes.</span><span class="error" id="save-err"></span></div>
   </div>`;
+  bindItemButtons(main.querySelector(".item-actions"), (p, n) => { location.hash = p ? `#story/${encodeURIComponent(n)}` : "#story"; });
 
   const run = async body => {
     const job = await api("api/run/storyboard", { name, ...body });
