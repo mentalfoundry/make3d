@@ -364,8 +364,12 @@ Then open `http://localhost:7870/` on this machine.
   switch to *From a storyboard* to render one of your storyboards into a multi-shot scene.
   That tab shows its keyframes and warns about missing or WEAK ones, with the same render options
   as the storyboard page (draft, keyframe strength, music bed, re-render segments).
-- **Storyboard page.** It checks every 30 seconds and shows new keyframes, check results and
-  rendered videos without a reload, leaving any text you're editing alone. A banner shows jobs
+- **Live updates.** The portal pushes job and storyboard changes to open pages over one
+  server-sent-events connection (`/api/events`), so pages don't poll. The Jobs list, the job
+  counter, the Library and storyboard pages update by themselves. Only a job's log is fetched
+  every few seconds while you watch it.
+- **Storyboard page.** It shows new keyframes, check results and rendered videos as soon as a
+  job finishes, without a reload, leaving any text you're editing alone. A banner shows jobs
   working on that storyboard. Each keyframe has its own redraw panel:
   - Redrawing uses the text as currently typed, saving it first.
   - An optional one-off direction can be added.

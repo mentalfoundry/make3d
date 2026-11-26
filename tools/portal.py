@@ -401,6 +401,8 @@ def build_job(tool, form, job_id):
 class Jobs:
     def __init__(self):
         self.lock = threading.Lock()
+        self.sub_lock = threading.Lock()
+        self.subscribers = set()
         self.jobs = {}
         self.queue = queue.Queue()
         self.procs = {}
@@ -434,9 +436,37 @@ class Jobs:
              "status": "queued", "created": time.time(), "started": None, "ended": None, "code": None}
         with self.lock:
             self.jobs[jid] = j
-            self._save(j)
+            self._changed(j)
         self.queue.put(jid)
         return j
+
+    # Server-sent events: each open page has a queue; job and storyboard changes are pushed to all
+    MAX_SUBSCRIBERS = 50
+
+    def subscribe(self):
+        q = queue.Queue(maxsize=200)
+        with self.sub_lock:
+            if len(self.subscribers) >= self.MAX_SUBSCRIBERS:
+                return None
+            self.subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q):
+        with self.sub_lock:
+            self.subscribers.discard(q)
+
+    def publish(self, ev):
+        with self.sub_lock:
+            for q in list(self.subscribers):
+                try:
+                    q.put_nowait(ev)
+                except queue.Full:   # a stuck client; it will resync when it reconnects
+                    pass
+
+    def _changed(self, j):
+        self._save(j)
+        self.publish({"type": "job", "id": j["id"], "status": j["status"], "outdir": j["outdir"],
+                      "title": j["title"]})
 
     def busy(self, outdir):
         with self.lock:
@@ -458,7 +488,7 @@ class Jobs:
                 return None
             if j["status"] == "queued":
                 j["status"], j["ended"] = "cancelled", time.time()
-                self._save(j)
+                self._changed(j)
             elif j["status"] == "running" and jid in self.procs:
                 j["cancel"] = True
                 p = self.procs[jid]
@@ -485,7 +515,7 @@ class Jobs:
                 if not j or j["status"] != "queued":
                     continue
                 j["status"], j["started"] = "running", time.time()
-                self._save(j)
+                self._changed(j)
             with _cfg_lock:
                 cfg = load_config()
             env = dict(os.environ, **lemonade_env(cfg))
@@ -508,7 +538,7 @@ class Jobs:
                 self.procs.pop(jid, None)
                 j["code"], j["ended"] = code, time.time()
                 j["status"] = "cancelled" if j.get("cancel") else ("done" if code == 0 else "failed")
-                self._save(j)
+                self._changed(j)
 
     def list(self):
         with self.lock:
@@ -750,6 +780,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def stream_events(self):
+        """Server-sent events: pushes job and storyboard changes to the page as they happen."""
+        jobs = self.server.jobs
+        q = jobs.subscribe()
+        if q is None:
+            return self.send(503, {"error": "too many open pages"})
+        self.close_connection = True
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b"retry: 3000\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    data = f"data: {json.dumps(q.get(timeout=20))}\n\n"
+                except queue.Empty:
+                    data = ": keep-alive\n\n"   # also lets us notice a closed page
+                self.wfile.write(data.encode())
+                self.wfile.flush()
+        except OSError:
+            pass
+        finally:
+            jobs.unsubscribe(q)
+
     def route_get(self):
         url = urllib.parse.urlsplit(self.path)
         path, qs = url.path, urllib.parse.parse_qs(url.query)
@@ -764,6 +822,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send(200, {"ok": self.session_ok()})
         if not self.session_ok():
             return self.send(401, {"error": "log in"})
+        if path == "/api/events":
+            return self.stream_events()
         if path == "/api/jobs":
             return self.send(200, self.server.jobs.list())
         m = re.fullmatch(r"/api/jobs/([\w-]+)", path)
@@ -866,6 +926,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with open(sbp + ".tmp", "w") as f:
                 json.dump(sb, f, indent=1)
             os.replace(sbp + ".tmp", sbp)
+            self.server.jobs.publish({"type": "story", "name": name})
             return self.send(200, {"ok": True})
         m = re.fullmatch(r"/api/story/([\w-]+)", path)
         if m:
@@ -882,6 +943,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with open(p + ".tmp", "w") as f:
                 json.dump(sb, f, indent=1)
             os.replace(p + ".tmp", p)
+            self.server.jobs.publish({"type": "story", "name": slug(m.group(1))})
             return self.send(200, {"ok": True})
         if path in ("/api/library/rename", "/api/library/delete"):
             item = library_item(body.get("path"))
@@ -890,9 +952,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if path.endswith("delete"):
                 move_to_trash(os.path.join(OUT, item["path"]))
                 self.server.jobs.moved(item["path"], None)
+                self.server.jobs.publish({"type": "library"})
                 return self.send(200, {"ok": True})
             newpath = rename_item(item, str(body.get("name", "")))
             self.server.jobs.moved(item["path"], newpath)
+            self.server.jobs.publish({"type": "library"})
             return self.send(200, {"ok": True, "path": newpath, "name": os.path.basename(newpath)})
         if path == "/api/settings":
             with _cfg_lock:

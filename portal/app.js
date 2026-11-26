@@ -5,8 +5,24 @@ const $ = (s, el = document) => el.querySelector(s);
 const main = $("#main");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const outUrl = p => "out/" + p.split("/").map(encodeURIComponent).join("/");
-let timers = [];
-const clearTimers = () => { timers.forEach(clearInterval); timers = []; };
+let timers = [], pageSubs = [];
+const clearTimers = () => { timers.forEach(clearInterval); timers = []; pageSubs.forEach(f => bus.delete(f)); pageSubs = []; };
+
+// Server-sent events: the portal pushes job and storyboard changes, so pages don't poll.
+// listen() subscribes for the current page only (cleared on navigation).
+const bus = new Set();
+let events = null;
+function connectEvents() {
+  if (events) return;
+  let opened = false;
+  events = new EventSource("api/events");
+  events.onopen = () => { if (opened) bus.forEach(f => f({ type: "reconnect" })); opened = true; };
+  events.onmessage = e => { const ev = JSON.parse(e.data); bus.forEach(f => f(ev)); };
+  events.onerror = () => {   // the browser retries by itself unless the server refused (e.g. logged out)
+    if (events.readyState === EventSource.CLOSED) { events = null; setTimeout(() => { if (!$("#app").hidden) connectEvents(); }, 5000); }
+  };
+}
+const listen = f => { bus.add(f); pageSubs.push(f); };
 
 async function api(path, body) {
   const opt = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
@@ -307,7 +323,8 @@ const pages = {
       main.querySelectorAll("tr.link").forEach(tr => tr.onclick = () => location.hash = `#jobs/${tr.dataset.id}`);
       return jobs.some(j => j.status === "running" || j.status === "queued");
     };
-    if (await draw()) timers.push(setInterval(draw, 4000));
+    await draw();
+    listen(ev => { if (ev.type === "job" || ev.type === "reconnect") draw(); });
   },
 
   async library(path) {
@@ -323,6 +340,7 @@ const pages = {
     };
     $("#kind").onchange = draw; draw();
     bindItemButtons($("#tiles"), () => pages.library());
+    listen(ev => { if (ev.type === "library" || (ev.type === "job" && ev.status !== "queued" && ev.status !== "running")) api("api/library").then(l => { lib.splice(0, lib.length, ...l); draw(); }); });
   },
 
   async settings() { settingsPage(); },
@@ -704,7 +722,7 @@ async function storyPage(name) {
   const showActive = () => {
     $("#sb-active").innerHTML = info.active.length ? `<div class="notice small">${info.active.map(j =>
       `<span class="status ${j.status}">${j.status}</span> ${esc(j.title)} · <a href="#jobs/${j.id}">log</a>`).join("<br>")}
-      <span class="muted"> This page updates every 30 seconds.</span></div>` : "";
+      <span class="muted"> This page updates by itself when it finishes.</span></div>` : "";
   };
   // Spinner + timer on every keyframe an active job is drawing (from the server, so it's
   // right after a reload or on another device too). The timer ticks locally every second.
@@ -746,11 +764,13 @@ async function storyPage(name) {
     if (vids !== old.videos.map(v => v + old.mtimes[v]).join()) $("#sb-vids").innerHTML = vidsHtml();
     showActive();
     drawBusy();
-    $("#sb-polled").textContent = `checked ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+    $("#sb-polled").textContent = `updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
   }
   showActive();
   drawBusy();
-  timers.push(setInterval(refresh, 30000));
+  listen(ev => {
+    if ((ev.type === "job" && ev.outdir === `story/${name}`) || (ev.type === "story" && ev.name === name) || ev.type === "reconnect") refresh();
+  });
   timers.push(setInterval(() => { if (info.active.length) drawBusy(); }, 1000));
 }
 
@@ -815,6 +835,7 @@ async function checkLemon() {
 
 function showLogin() {
   clearTimers();
+  if (events) { events.close(); events = null; }
   $("#app").hidden = true; $("#login").hidden = false;
   $("#login-pw").focus();
 }
@@ -848,10 +869,12 @@ function start() {
   $("#login").hidden = true; $("#app").hidden = false;
   route();
   checkLemon();
+  connectEvents();
   if (!started) {
     started = true;
     window.addEventListener("hashchange", route);
-    setInterval(updateBadge, 10000);
+    bus.add(ev => { if (ev.type === "job" || ev.type === "reconnect") updateBadge(); });
+    connectEvents();
   }
 }
 
