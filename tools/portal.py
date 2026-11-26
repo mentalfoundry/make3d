@@ -294,10 +294,13 @@ def build_job(tool, form, job_id):
         return "make3d", args, f"Art to 3D: {name} (" + ("object" if mode == "object" else "as-is") + ")", name
     if tool == "makevideo":
         prompt = _s(form, "prompt", required=True)
-        name = slug(_s(form, "name") or prompt)
+        name = slug(_s(form, "name") or re.sub(r"<([\w-]+)>", r"\1", prompt))
         args += [prompt, "--name", name]
         if form.get("image"):
             args += ["--image", _save_upload(form["image"], up_dir, "start")]
+        elif placeholders(prompt):   # <knight>: Flux draws the start frame from the library model
+            copy_library_refs(placeholders(prompt), os.path.join(up_dir, "refs"))
+            args += ["--refs", os.path.join(up_dir, "refs")]
         if form.get("end_image"):
             if not form.get("image"):
                 raise BadRequest("an end image needs a start image")
@@ -339,13 +342,17 @@ def build_job(tool, form, job_id):
             idea = _s(form, "idea", required=True)
             args += ["new", name, idea]
             refs = form.get("refs") or []
-            if refs:
-                rdir = os.path.join(up_dir, "refs")
-                for r in refs:
-                    stem = slug(os.path.splitext(str(r.get("filename", "")))[0], 30)
-                    if not stem:
-                        raise BadRequest("name each reference image after its placeholder, e.g. knight.png")
-                    _save_upload(r, rdir, stem)
+            rdir, uploaded = os.path.join(up_dir, "refs"), set()
+            for r in refs:
+                stem = slug(os.path.splitext(str(r.get("filename", "")))[0], 30)
+                if not stem:
+                    raise BadRequest("name each reference image after its placeholder, e.g. knight.png")
+                _save_upload(r, rdir, stem)
+                uploaded.add(stem)
+            names = placeholders(idea)
+            if names:   # uploads win; the rest come from 3D models in the library
+                copy_library_refs(names, rdir, have={u.lower() for u in uploaded})
+            if names or refs:
                 args += ["--refs", rdir]
             opt("seconds", "--seconds", float, 5, 120)
             opt("every", "--every", float, 2, 10)
@@ -541,6 +548,39 @@ def library():
     allitems = (items(OUT, "model") + items(os.path.join(OUT, "video"), "video") +
                 items(os.path.join(OUT, "sound"), "sound") + items(os.path.join(OUT, "story"), "story"))
     return sorted(allitems, key=lambda x: x["mtime"], reverse=True)
+
+
+def model_refs():
+    """3D models usable as <name> references in video prompts and storyboards: their A-pose
+    concept sheet if there is one, otherwise a front render of the model."""
+    res = []
+    for x in library():
+        if x["kind"] != "model":
+            continue
+        n, files = x["name"], x["files"]
+        img = next((f for f in ("concept.png", "concept.jpg", "concept.jpeg", "concept.webp",
+                                f"{n}-front.png", "preview.png") if f in files), None)
+        if img and any(f.endswith(".glb") for f in files):
+            res.append({"name": n, "image": f"{x['path']}/{img}"})
+    return sorted(res, key=lambda r: r["name"])
+
+
+def placeholders(text):
+    return list(dict.fromkeys(re.findall(r"<([\w-]+)>", text or "")))
+
+
+def copy_library_refs(names, dest, have=()):
+    """Copy the library reference image for each <name> (not already uploaded) into dest."""
+    refs = {r["name"]: r for r in model_refs()}
+    missing = [n for n in names if n.lower() not in have and n.lower() not in refs]
+    if missing:
+        raise BadRequest(f"no 3D model called {', '.join('<' + m + '>' for m in missing)} in the library. "
+                         "Type < to pick one, or rename a model to match")
+    os.makedirs(dest, exist_ok=True)
+    for n in names:
+        if n.lower() not in have:
+            src = os.path.join(OUT, refs[n.lower()]["image"])
+            shutil.copy(src, os.path.join(dest, n + os.path.splitext(src)[1].lower()))
 
 
 def library_item(path):
@@ -739,6 +779,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send(200, j)
         if path == "/api/library":
             return self.send(200, library())
+        if path == "/api/refs":
+            return self.send(200, model_refs())
         if path == "/api/templates":
             return self.send(200, templates())
         if path == "/api/presets":

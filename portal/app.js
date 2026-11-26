@@ -220,7 +220,7 @@ const pages = {
       intro: "LTX-2.3 makes one clip with matching audio from a prompt, optionally starting from an image (and ending on another). For a longer scene with several shots, make it from a storyboard.",
       note: gpuNote + " About 6 minutes per 5 seconds at full size; drafts take 1–2 minutes.",
       fields: [
-        F.area("prompt", "Prompt", { req: true, ph: "A knight warms his hands at a campfire at night, sparks rising. Sound: crackling fire, wind in the trees." , help: "Describe the motion and the sounds you want." }),
+        F.area("prompt", "Prompt", { req: true, ph: "The <knight> warms his hands at a campfire at night, sparks rising. Sound: crackling fire, wind in the trees." , help: "Describe the motion and the sounds you want. Type < to put a 3D model from your library in the shot: Flux draws the start frame with it, so say how the shot starts (\"sword lowered, he slowly raises it\")." }),
         F.text("name", "Name"),
         F.num("seconds", "Seconds", { min: 1, max: 20, ph: "5" }),
         F.text("size", "Size", { ph: "768x512", help: "WxH, multiples of 32" }),
@@ -231,6 +231,11 @@ const pages = {
         F.check("no_audio", "No audio"),
       ],
     });
+    const vf = $("#tool-form");
+    attachRefPicker(vf.elements.prompt);
+    const startHelp = () => { vf.elements.image.closest("label").querySelector("[data-lbl]").textContent =
+      /<[\w-]+>/.test(vf.elements.prompt.value) ? "Start image (replaces the one drawn from <references>)" : "Start image"; };
+    vf.elements.prompt.addEventListener("input", startHelp);
   },
 
   async sound() {
@@ -256,8 +261,8 @@ const pages = {
     const stories = lib.filter(x => x.kind === "story");
     const fields = [
       F.text("name", "Name", { req: true, ph: "knight-vs-dragon" }),
-      F.area("idea", "What happens", { req: true, ph: "a <knight> fights a <dragon> in a ruined castle courtyard at dusk", help: "Write <name> for a character that has a reference image below." }),
-      F.files("refs", "Character reference images", { help: "Optional. Name each file after its placeholder: knight.png, dragon.png" }),
+      F.area("idea", "What happens", { req: true, ph: "a <knight> fights a <goblin> in a ruined castle courtyard at dusk", help: "Type < to cast a 3D model from your library: its A-pose sheet keeps the character looking the same in every shot." }),
+      F.files("refs", "Other reference images", { help: "Optional, for characters that aren't in the library. Name each file after its placeholder: dragon.png for <dragon>." }),
       F.num("seconds", "Length (s)", { min: 5, max: 120, ph: "30" }),
       F.num("every", "Keyframe every (s)", { min: 2, max: 10, ph: "5" }),
       F.text("style", "Style", { ph: "hand-painted fantasy art, soft light" }),
@@ -271,8 +276,11 @@ const pages = {
       <form class="card stack" id="tool-form"><h3>New storyboard</h3><div class="grid">${fields.map(fieldHtml).join("")}</div>
         <div class="row"><button class="primary" type="submit">Plan and draw keyframes</button><span class="error" id="form-err"></span></div>
       </form></div>`;
-    stories.forEach(s => { const a = main.querySelector(`[data-path="${CSS.escape(s.path)}"]`); if (a) a.href = `#story/${s.name}`; });
+    if (stories.length) bindItemButtons(main.querySelector(".tiles"), () => pages.story());
     const form = $("#tool-form");
+    const uploads = () => [...form.elements.refs.files].map(f => f.name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""));
+    const refresh = await attachRefPicker(form.elements.idea, { uploads });
+    form.elements.refs.addEventListener("change", refresh);
     form.onsubmit = async e => {
       e.preventDefault();
       $("#form-err").textContent = "";
@@ -355,6 +363,75 @@ function bindItemButtons(root, onDone) {
       }
     } catch (err) { alert(err.message); }
   });
+}
+
+// ------------------------------------------------------------------ <name> reference picker
+
+// Typing "<" in a prompt opens a list of 3D models in the library; picking one inserts <name>.
+// Under the box, each <name> in the text shows the image that will be used for it.
+let refList = null;
+async function attachRefPicker(ta, { uploads } = {}) {
+  refList = refList || await api("api/refs").catch(() => []);
+  const label = ta.closest("label");
+  label.style.position = "relative";
+  const menu = document.createElement("div");
+  menu.className = "refpick"; menu.hidden = true; menu.setAttribute("role", "listbox");
+  const chips = document.createElement("div");
+  chips.className = "refchips";
+  label.after(chips);
+  label.appendChild(menu);
+  let items = [], sel = 0, start = -1;
+
+  const query = () => {
+    const before = ta.value.slice(0, ta.selectionStart);
+    const m = before.match(/<([\w-]*)$/);
+    return m ? { q: m[1].toLowerCase(), at: before.length - m[0].length } : null;
+  };
+  const draw = () => {
+    menu.innerHTML = items.length ? items.map((r, i) =>
+      `<div class="opt${i === sel ? " sel" : ""}" role="option" data-i="${i}"><img src="${outUrl(r.image)}" alt=""><span>${esc(r.name)}</span></div>`).join("")
+      : `<div class="empty">No 3D model matches. Make one first, or rename one in the Library.</div>`;
+  };
+  const open = () => {
+    const q = query();
+    if (!q) { menu.hidden = true; return; }
+    start = q.at;
+    items = refList.filter(r => r.name.includes(q.q)).sort((a, b) => a.name.startsWith(q.q) ? -1 : b.name.startsWith(q.q) ? 1 : 0);
+    sel = 0; draw(); menu.hidden = false;
+  };
+  const pick = r => {
+    const end = ta.selectionStart, after = ta.value.slice(end);
+    const ins = `<${r.name}>` + (/^[\s.,!?;:]/.test(after) ? "" : " ");
+    ta.value = ta.value.slice(0, start) + ins + after;
+    ta.selectionStart = ta.selectionEnd = start + ins.length;
+    menu.hidden = true; ta.focus(); update();
+  };
+  const update = () => {
+    const names = [...new Set([...ta.value.matchAll(/<([\w-]+)>/g)].map(m => m[1]))];
+    const up = uploads ? uploads() : [];
+    chips.innerHTML = names.map(n => {
+      const r = refList.find(x => x.name === n.toLowerCase());
+      if (up.includes(n.toLowerCase())) return `<span class="chip"><b>&lt;${esc(n)}&gt;</b> your uploaded image</span>`;
+      return r ? `<span class="chip"><img src="${outUrl(r.image)}" alt=""><b>&lt;${esc(n)}&gt;</b> from the library</span>`
+               : `<span class="chip bad"><b>&lt;${esc(n)}&gt;</b> no 3D model with this name${uploads ? ` (or upload ${esc(n)}.png below)` : ""}</span>`;
+    }).join("");
+  };
+  ta.addEventListener("input", () => { open(); update(); });
+  ta.addEventListener("click", open);
+  ta.addEventListener("keydown", e => {
+    if (menu.hidden) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault(); sel = (sel + (e.key === "ArrowDown" ? 1 : -1) + items.length) % Math.max(items.length, 1); draw();
+    } else if ((e.key === "Enter" || e.key === "Tab") && items[sel]) { e.preventDefault(); pick(items[sel]); }
+    else if (e.key === "Escape") { menu.hidden = true; }
+  });
+  ta.addEventListener("blur", () => setTimeout(() => { menu.hidden = true; }, 150));
+  menu.addEventListener("mousedown", e => {
+    const o = e.target.closest(".opt");
+    if (o) { e.preventDefault(); pick(items[+o.dataset.i]); }
+  });
+  update();
+  return update;
 }
 
 // ------------------------------------------------------------------ outputs

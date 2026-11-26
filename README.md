@@ -167,6 +167,7 @@ makevideo "a campfire crackling at night, sparks rising, an owl hoots" --draft  
 makevideo "waves crashing on rocks at sunset, seagulls" --seconds 8
 makevideo "the knight draws his sword, metal scraping, wind" --image out/knight/concept.png
 makevideo "a flower opens" --image bud.png --end-image flower.png
+makevideo "the <knight> raises his sword, steel ringing" --refs ~/chars   # see below
 ```
 
 LTX-2.3 (distilled 1.1) makes the picture **and a matching sound track** from one prompt,
@@ -236,6 +237,14 @@ an image per name. A/T-pose sheets from `make3d`/`art3d` (`out/<name>/concept.pn
 ls ~/chars        # knight.png  dragon.png
 storyboard new duel "a <knight> fights a <dragon> in a ruined castle at dusk" --refs ~/chars
 ```
+
+**In the portal you don't need a folder:** type `<` in the storyboard's "What happens" box, or
+in a video prompt, and pick a 3D model from your library. Its A-pose concept sheet becomes the
+reference (or a front render, for models without one). Uploaded images still work for characters
+that aren't in the library, and win over a library model with the same name. In a single video,
+`<name>` makes Flux draw the start frame with that character (`makevideo --refs`), and LTX-2.3
+animates from there. Flux tends to draw the end of the action ("raises his sword" gets a
+raised sword), so describe how the shot starts. A start image you upload replaces that drawn frame.
 
 The vision model describes each image and those descriptions replace the invented ones in
 the plan and in every video prompt. Flux gets the character images as references for every

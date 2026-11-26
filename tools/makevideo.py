@@ -10,6 +10,8 @@ Examples:
   makevideo "a flower blooms" --image bud.png --end-image flower.png
   makevideo "waves crashing on rocks at sunset" --seconds 8 --size 1024x576
   makevideo "a campfire crackling" --draft        # quick low-res preview
+  makevideo "the <knight> raises his sword, steel ringing" --refs ~/chars   # knight.png in ~/chars:
+                                       # Flux draws the start frame with that character first
 
 Output: ~/3d/out/video/<name>/: <name>.webm (VP8/Opus: browsers, Unity, VLC), <name>.ogv
 (Theora/Vorbis: Godot), <name>.mp4 (H.264/AAC: Unreal, phones, editors; needs an H.264
@@ -117,6 +119,36 @@ def make_copies(raw, out, name, pixels):
     return made
 
 
+def draw_start_frame(prompt, names, folder, out, size, seed):
+    """Flux draws the opening frame with the referenced characters (like storyboard keyframes)."""
+    files = {os.path.splitext(f)[0].lower(): f for f in os.listdir(folder)
+             if f.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))}
+    missing = [n for n in names if n.lower() not in files]
+    if missing:
+        sys.exit(f"no image for {', '.join('<' + m + '>' for m in missing)} in {folder}")
+    refs = [os.path.join(folder, files[n.lower()]) for n in names]
+    which = ", ".join(f"image {k + 1} shows the {n.replace('-', ' ')}" for k, n in enumerate(names))
+    text = re.sub(r"<([\w-]+)>", lambda m: "the " + m.group(1).replace("-", " "), prompt)
+    text = re.split(r"\bSounds?:", text)[0].strip()
+    flux = (f"Reference images: {which}. They are character sheets: copy each character's exact "
+            f"appearance, proportions, colours, costume and details from its sheet, but NOT the "
+            f"sheet's neutral standing pose, framing or plain background. Never mix features "
+            f"between characters. Draw the opening frame of this film shot: {text} "
+            f"Cinematic film still, no text, no watermark, no borders.")
+    # Flux draws ~0.9 MP at the video's shape; the video is then made at its usual size
+    m = re.fullmatch(r"(\d+)x(\d+)", size or "768x512")
+    w, h = (int(v) for v in m.groups()) if m else (768, 512)
+    k = (1152 * 768 / (w * h)) ** 0.5
+    fsize = f"{round(w * k / 16) * 16}x{round(h * k / 16) * 16}"
+    print(f"== start frame: Flux with {', '.join('<' + n + '>' for n in names)} at {fsize}", flush=True)
+    path = os.path.join(out, "start.png")
+    open(path, "wb").write(lemon.edit_image(flux, refs, size=fsize, seed=seed)[0])
+    for n, r in zip(names, refs):
+        shutil.copy(r, os.path.join(out, f"ref-{n}{os.path.splitext(r)[1].lower()}"))
+    print(f"  {path}")
+    return path
+
+
 def size_like(image, pixels):
     """WxH (multiples of 32) with the image's aspect ratio and about `pixels` pixels."""
     r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
@@ -183,11 +215,24 @@ def main():
     ap.add_argument("--steps", type=int, default=8, help="sampling steps (distilled model: 8)")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--negative", default=NEGATIVE)
+    ap.add_argument("--refs", help="folder of character images (knight.png, ...) for <knight>-style "
+                    "placeholders in the prompt: Flux draws the start frame with those characters")
     ap.add_argument("--no-audio", action="store_true", help="silent video (a bit faster)")
     ap.add_argument("--draft", action="store_true", help="quick preview: 512x320, 2 seconds")
     a = ap.parse_args()
     if a.end_image and not a.image:
         ap.error("--end-image needs --image")
+    names = list(dict.fromkeys(re.findall(r"<([\w-]+)>", a.prompt)))
+    plain = re.sub(r"<([\w-]+)>", lambda m: m.group(1).replace("-", " "), a.prompt)
+    name = a.name or re.sub(r"[^a-z0-9]+", "-", plain.lower()).strip("-")[:40]
+    out = os.path.join(ROOT, "out", "video", name)
+    os.makedirs(out, exist_ok=True)
+    if a.refs:
+        if a.image:
+            ap.error("--refs draws the start frame, so it can't be used with --image")
+        if not names:
+            ap.error("--refs needs placeholders in the prompt, e.g. \"the <knight> draws his sword\"")
+        a.image = draw_start_frame(a.prompt, names, a.refs, out, a.size, a.seed)
     if a.image and not a.size:
         a.size = size_like(a.image, 768 * 512)
     if a.draft:
@@ -200,13 +245,10 @@ def main():
     W, H = (int(v) // 32 * 32 for v in m.groups())
     frames = frames_for(a.seconds, a.fps)
 
-    name = a.name or re.sub(r"[^a-z0-9]+", "-", a.prompt.lower()).strip("-")[:40]
-    out = os.path.join(ROOT, "out", "video", name)
-    os.makedirs(out, exist_ok=True)
     raw = os.path.join(out, f"{name}-raw.webm")
     print(f"== video: {W}x{H}, {frames} frames ({frames / a.fps:.1f} s at {a.fps} fps), "
           f"{a.steps} steps, {'no audio' if a.no_audio else 'with audio'}")
-    secs = render(a.prompt, raw, W, H, frames, fps=a.fps, steps=a.steps, seed=a.seed,
+    secs = render(plain, raw, W, H, frames, fps=a.fps, steps=a.steps, seed=a.seed,
                   image=a.image, end_image=a.end_image, audio=not a.no_audio, negative=a.negative)
     print(f"  rendered in {secs / 60:.1f} min")
 
@@ -214,7 +256,7 @@ def main():
         ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0", raw],
         capture_output=True, text=True).stdout
     made = make_copies(raw, out, name, W * H) if shutil.which("ffmpeg") else [raw]
-    json.dump({"prompt": a.prompt, "negative": a.negative, "image": a.image, "end_image": a.end_image,
+    json.dump({"prompt": a.prompt, "refs": names if a.refs else [], "negative": a.negative, "image": a.image, "end_image": a.end_image,
                "size": [W, H], "frames": frames, "fps": a.fps, "steps": a.steps, "seed": a.seed,
                "audio": not a.no_audio, "render_seconds": round(secs)},
               open(os.path.join(out, "prompt.json"), "w"), indent=1)
