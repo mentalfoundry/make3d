@@ -76,9 +76,9 @@ async function formValues(form, fields) {
   return v;
 }
 
-function toolPage({ title, intro, tool, fields, extra = {}, note }) {
+function toolPage({ title, intro, tool, fields, extra = {}, note, top = "" }) {
   main.innerHTML = `<div class="stack">
-    <div><h2>${esc(title)}</h2><p class="muted">${intro}</p></div>
+    <div><h2>${esc(title)}</h2><p class="muted">${intro}</p></div>${top}
     ${note ? `<div class="notice small">${note}</div>` : ""}
     <form class="card stack" id="tool-form"><div class="grid">${fields.map(fieldHtml).join("")}</div>
       <div class="row"><button class="primary" type="submit">Start</button><span class="error" id="form-err"></span></div>
@@ -209,11 +209,16 @@ const pages = {
     presetHints(form);
   },
 
-  async video() {
+  async video(arg) {
+    const switcher = which => `<div class="switch" role="tablist">
+      <a href="#video" role="tab" class="${which === "prompt" ? "active" : ""}">From a prompt</a>
+      <a href="#video/story" role="tab" class="${which === "story" ? "active" : ""}">From a storyboard</a></div>`;
+    const gpuNote = "Video always renders on this machine's GPU, even when Lemonade is elsewhere.";
+    if (arg === "story" || arg?.startsWith("story/")) return videoFromStoryboard(arg.slice(6), switcher("story"), gpuNote);
     toolPage({
-      title: "Video with sound", tool: "makevideo",
-      intro: "LTX-2.3 makes video and matching audio from a prompt, optionally starting from an image (and ending on another).",
-      note: "Video always renders on this machine's GPU, even when Lemonade is elsewhere. About 6 minutes per 5 seconds at full size; drafts take 1–2 minutes.",
+      title: "Video with sound", tool: "makevideo", top: switcher("prompt"),
+      intro: "LTX-2.3 makes one clip with matching audio from a prompt, optionally starting from an image (and ending on another). For a longer scene with several shots, make it from a storyboard.",
+      note: gpuNote + " About 6 minutes per 5 seconds at full size; drafts take 1–2 minutes.",
       fields: [
         F.area("prompt", "Prompt", { req: true, ph: "A knight warms his hands at a campfire at night, sparks rising. Sound: crackling fire, wind in the trees." , help: "Describe the motion and the sounds you want." }),
         F.text("name", "Name"),
@@ -471,6 +476,62 @@ async function updateBadge() {
 
 // ------------------------------------------------------------------ storyboard detail
 
+async function videoFromStoryboard(name, switcher, gpuNote) {
+  const stories = (await api("api/library")).filter(x => x.kind === "story");
+  const head = `<div class="stack"><div><h2>Video with sound</h2><p class="muted">Render a storyboard into one video: each keyframe becomes a shot, joined into a continuous scene with sound.</p></div>${switcher}`;
+  if (!stories.length) {
+    main.innerHTML = head + `<div class="card"><p>No storyboards yet.</p><p><a href="#story">Make a storyboard</a> from an idea first: it plans the shots and draws a keyframe for each, which you can check and edit before rendering.</p></div></div>`;
+    return;
+  }
+  name = name || stories[0].name;
+  if (!stories.some(x => x.name === name)) name = stories[0].name;
+  const info = await api(`api/story/${encodeURIComponent(name)}`);
+  const sb = info.storyboard, checks = sb.checks || {};
+  const n = sb.keyframes.length, drawn = info.keyframes.length;
+  const weak = Object.values(checks).filter(c => c && !c.ok).length;
+  const len = sb.keyframes[n - 1]?.t ?? 0;
+  const strip = sb.keyframes.map((k, i) => {
+    const f = `key-${String(i).padStart(2, "0")}.png`;
+    return info.keyframes.includes(f) ? `<img src="${outUrl(`story/${name}/${f}`)}?v=${Math.round(info.mtimes[f] || 0)}" alt="keyframe ${i}" title="${esc(k.t + "s: " + k.image)}">` : `<div class="missing">${i}</div>`;
+  }).join("");
+  const vids = info.videos.filter(f => !f.endsWith(".ogv"));
+  main.innerHTML = head + `<div class="notice small">${gpuNote} A full render takes roughly 1.5 minutes per second of video; a draft about 40% of that.</div>
+    <div class="card stack">
+      <label>Storyboard<select id="sb-pick">${stories.map(x => `<option value="${esc(x.name)}"${x.name === name ? " selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
+      <div><b>${esc(sb.title || name)}</b> <span class="muted small">· ${len}s · ${n} keyframes · ${n - 1} shots</span>
+        <p class="muted small" style="margin:4px 0 0">${esc(sb.idea || "")}</p></div>
+      <div class="kf-strip">${strip}</div>
+      ${drawn < n ? `<p class="error">${n - drawn} keyframe(s) aren't drawn yet. Draw them on the storyboard page first.</p>` : ""}
+      ${weak ? `<p class="small" style="color:var(--warn)">${weak} keyframe(s) flagged WEAK by the check. Look at them before a full render.</p>` : ""}
+      <p class="small"><a href="#story/${encodeURIComponent(name)}">Edit this storyboard</a> (keyframes, shot text, sounds) · <a href="#story">New storyboard</a>${vids.length ? ` · already rendered: ${vids.map(v => `<a href="${outUrl(`story/${name}/${v}`)}" target="_blank">${esc(v)}</a>`).join(", ")}` : ""}</p>
+    </div>
+    ${renderFormHtml()}</div>`;
+  $("#sb-pick").onchange = e => { location.hash = `#video/story/${encodeURIComponent(e.target.value)}`; };
+  const rf = $("#render-form");
+  if (drawn < n) rf.querySelector("button[type=submit]").disabled = true;
+  rf.onsubmit = async e => {
+    e.preventDefault(); $("#render-err").textContent = "";
+    try {
+      const job = await api("api/run/storyboard", { name, step: "render", ...await formValues(rf, RENDER_FIELDS) });
+      location.hash = `#jobs/${job.id}`;
+    } catch (err) { $("#render-err").textContent = err.message; }
+  };
+}
+
+// The storyboard render form, used on the storyboard page and on the Video page
+const RENDER_FIELDS = [
+  F.check("draft", "Draft", { value: true, help: "Low resolution, about 2.5× faster" }),
+  F.num("end_strength", "Keyframe strength", { min: 0, max: 1, step: 0.05, ph: "0.4", help: "How hard each segment is pulled to its next keyframe (higher rushes then holds still)" }),
+  F.text("only", "Re-render segments", { ph: "e.g. 2", help: "New seed for these; later ones follow" }),
+  F.text("music", "Music bed", { ph: "epic orchestral battle music", help: "Optional, ACE-Step" }),
+  F.check("classic", "Classic segments", { help: "Pin both ends of each segment instead of continuing" }),
+];
+function renderFormHtml() {
+  return `<form class="card stack" id="render-form"><h3>Render</h3>
+      <div class="grid">${RENDER_FIELDS.map(fieldHtml).join("")}</div>
+      <div class="row"><button class="primary" type="submit">Render</button><span class="error" id="render-err"></span></div></form>`;
+}
+
 async function storyPage(name) {
   const info = await api(`api/story/${encodeURIComponent(name)}`);
   const sb = info.storyboard, checks = sb.checks || {};
@@ -495,15 +556,7 @@ async function storyPage(name) {
     <div><h2>${esc(sb.title || name)}</h2><p class="muted">${esc(sb.idea || "")}</p>
       <p class="small muted">Characters: ${esc(sb.characters)}<br>Setting: ${esc(sb.setting)}<br>Style: ${esc(sb.style)}</p></div>
     ${vids ? `<div class="media-grid">${vids}</div>` : ""}
-    <form class="card stack" id="render-form"><h3>Render</h3>
-      <div class="grid">
-        ${fieldHtml(F.check("draft", "Draft", { value: true, help: "Low resolution, ~4× faster" }))}
-        ${fieldHtml(F.num("end_strength", "Keyframe strength", { min: 0, max: 1, step: 0.05, ph: "0.4", help: "How hard each segment is pulled to its next keyframe (higher rushes then holds still)" }))}
-        ${fieldHtml(F.text("only", "Re-render segments", { ph: "e.g. 2", help: "New seed for these; later ones follow" }))}
-        ${fieldHtml(F.text("music", "Music bed", { ph: "epic orchestral battle music", help: "Optional, ACE-Step" }))}
-        ${fieldHtml(F.check("classic", "Classic segments", { help: "Pin both ends of each segment instead of continuing" }))}
-      </div>
-      <div class="row"><button class="primary" type="submit">Render</button><span class="error" id="render-err"></span></div></form>
+    ${renderFormHtml()}
     <div class="row spread"><h3 style="margin:0">Keyframes</h3><span class="row"><button class="small" id="redraw-all">Redraw all</button></span></div>
     <div class="kf-grid">${kfs}</div>
     <div class="card stack"><h3>Segments</h3>${segs}</div>
@@ -518,7 +571,7 @@ async function storyPage(name) {
   main.querySelectorAll(".redraw").forEach(b => b.onclick = () => run({ step: "frames", only: b.dataset.i }).catch(e => alert(e.message)));
   $("#redraw-all").onclick = () => confirm("Redraw every keyframe?") && run({ step: "frames" }).catch(e => alert(e.message));
   const rf = $("#render-form");
-  const rfields = [F.check("draft"), F.num("end_strength"), F.text("only"), F.text("music"), F.check("classic")];
+  const rfields = RENDER_FIELDS;
   rf.onsubmit = async e => {
     e.preventDefault(); $("#render-err").textContent = "";
     try { await run({ step: "render", ...await formValues(rf, rfields) }); } catch (err) { $("#render-err").textContent = err.message; }

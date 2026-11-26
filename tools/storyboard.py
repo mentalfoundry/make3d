@@ -468,7 +468,7 @@ def main():
     p.add_argument("--tries", type=int, default=3, help="redraws per keyframe if the check fails (1 = no check)")
     p = sub.add_parser("render", help="render the segments and join them")
     p.add_argument("name")
-    p.add_argument("--draft", action="store_true", help="low resolution, ~4x faster, to check the motion")
+    p.add_argument("--draft", action="store_true", help="low resolution, about 2.5x faster, to check the motion")
     p.add_argument("--only", help="re-render these segments with a new seed, e.g. 2,5")
     p.add_argument("--music", help="add a music bed: style text for ACE-Step")
     p.add_argument("--music-db", type=float, default=14, help="how far below the scene sound the music sits (dB, default 14)")

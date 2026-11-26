@@ -336,6 +336,10 @@ Then open `http://localhost:7870/` on this machine.
 
   Concept and pose options (from "Concept options", or "Stop after the pose candidates")
   each get a **Make 3D from this** button, which opens Art to 3D with that image already chosen.
+- **Video from a prompt or a storyboard.** The Video page makes one clip from a prompt, or
+  switch to *From a storyboard* to render one of your storyboards into a multi-shot scene.
+  That tab shows its keyframes and warns about missing or WEAK ones, with the same render options
+  as the storyboard page (draft, keyframe strength, music bed, re-render segments).
 - **Jobs** run one at a time because they share the GPU. They keep running if you close the
   browser, and their logs are kept in `out/portal/jobs/`. A job that was running when the
   portal restarted shows as *interrupted*.
