@@ -668,7 +668,7 @@ async function storyPage(name) {
       <div class="grid shot-meta">
         <label class="small">Shot size<select data-kf="${i}" data-f="size">${SHOT_SIZES.map(z => `<option${z === k.size ? " selected" : ""}>${z}</option>`).join("")}</select></label>
         <label class="small">Camera<input type="text" data-kf="${i}" data-f="camera" value="${esc(k.camera || "")}"></label>
-        <label class="small">Seconds<input type="number" min="1.5" max="8" step="0.5" data-kf="${i}" data-f="seconds" value="${esc(k.seconds)}"></label>
+        <label class="small">Seconds<input type="number" min="1" max="8" step="0.5" data-kf="${i}" data-f="seconds" value="${esc(k.seconds)}"></label>
         <label class="small">In shot<input type="text" data-kf="${i}" data-f="who" value="${esc((k.who || []).join(", "))}" title="Names from the cast: ${esc(castNames.join(", "))}"></label>
       </div>
       <label class="small">First frame<textarea data-kf="${i}" data-f="image" aria-label="shot ${i} first frame">${esc(k.image)}</textarea></label>

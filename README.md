@@ -202,7 +202,11 @@ storyboard pick knight-dragon 4 2                # use take 2 of shot 4, then re
 By default a storyboard is a **shot list cut together**, the way people who get good results
 from video models work. The older mode, one continuous take, is `--continuous` (below).
 
-1. **new:** the chat model plans 2–6 s shots, each sized to its story beat. It mixes
+1. **new:** the chat model plans 1–8 s shots, each sized to its story beat, with an editor's
+   rhythm: 1–2 s inserts and quick reactions, 2.5–4 s for ordinary actions, 5–8 s holds on
+   moments that have to land and on the ending, and never three same-length shots in a row.
+   Lines quoted in your idea must be spoken in the plan; if one is missing, the planner is
+   asked again. It mixes
    wides, mediums, close-ups, inserts, over-the-shoulders and reactions, and gives each shot
    one action, one camera move and at most one speaker. The rules it follows:
    - Shot 0 is a wide establishing shot.
@@ -234,6 +238,9 @@ from video models work. The older mode, one continuous take, is `--continuous` (
    **hard cuts**. The ambience runs under the whole scene (`--ambience-db`, default 18 dB
    below; `--no-ambience` to leave it out), with an optional `--music` bed. Unchanged takes,
    the ambience and the music are reused, so changing one shot re-renders only that shot.
+   **Shortening** a shot never re-renders it: the take is long enough, so it's trimmed at
+   the new cut. It keeps the start of the action, so re-render (`--only N`) if the action no
+   longer finishes. Lengthening a shot renders new takes.
 
 Output in `out/story/<name>/`: `key-NN.png` (first frames), `storyboard.png`,
 `<name>-animatic.webm`, `shots-draft/` and `shots-full/` (every take), and

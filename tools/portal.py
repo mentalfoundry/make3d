@@ -974,7 +974,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 t = 0.0
                 for s in sb["keyframes"]:   # keep shot start times in step with edited lengths
                     try:
-                        s["seconds"] = min(8.0, max(1.5, float(s.get("seconds") or 3)))
+                        s["seconds"] = min(8.0, max(1.0, float(s.get("seconds") or 3)))
                     except (TypeError, ValueError):
                         raise BadRequest("a shot's length must be a number of seconds") from None
                     s["t"] = round(t, 2)

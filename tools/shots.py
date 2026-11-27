@@ -2,7 +2,7 @@
 
 Instead of one continuous take with a keyframe every N seconds (which drifts, holds on one
 framing and has to animate everything the video model is bad at), the chat model writes a
-shot list: 2-6 s shots sized to the story's beats, a mix of wides, mediums, close-ups,
+shot list: 1-8 s shots sized to the story's beats, a mix of wides, mediums, close-ups,
 inserts and reactions, one action and one camera move each, one speaker per dialogue shot.
 Each shot gets its own start frame, is rendered on its own from that frame (no chaining, so
 nothing drifts), in one or more takes that the vision model ranks, and the chosen takes are
@@ -31,7 +31,7 @@ FRAMING = {   # spelled out for Flux, which otherwise draws most shots full-leng
     "over-the-shoulder": "seen past the back of one person's shoulder and head, which fill one side of the frame in the foreground, out of focus; the other person faces the camera, framed from the waist up",
     "reaction": "close-up of one face reacting, head and shoulders fill the frame",
 }
-MIN_SECONDS, MAX_SECONDS = 1.5, 8.0
+MIN_SECONDS, MAX_SECONDS = 1.0, 8.0
 WORDS_PER_SECOND = 2.5          # comfortable speech; a line needs words / 2.5 + ~1 s
 TAIL = 0.25                     # rendered past the cut: the last frames are the weakest
 
@@ -60,8 +60,13 @@ Reply with JSON only, no other text, in exactly this shape:
 }}
 Rules (this is how good AI films are cut):
 - about {lo}-{hi} shots adding up to about {seconds} seconds;
-- give each story beat the time it needs and no more: a quick action or a look 2-3 s, a
-  movement 3-5 s, a spoken line 1 s plus 0.4 s per word; never more than 6 s;
+- give each story beat the time it needs and no more, and VARY the rhythm like an editor:
+  an insert of hands or an object, or a quick glance or reaction: 1-2 s;
+  an ordinary action or movement: 2.5-4 s;
+  a spoken line: 1 s plus 0.4 s per word;
+  a moment that has to land (an arrival, a bow, a final look, the last shot): 5-8 s;
+  cut faster as tension builds, hold longer on the emotional beats and the ending;
+  never three shots in a row of the same length; never more than 8 s;
 - shot 1 is a WIDE establishing shot showing the location and where everyone is; use another
   wide when people move to a new place;
 - mix shot sizes; never two shots in a row with the same size and the same people;
@@ -118,9 +123,21 @@ def plan(idea, seconds, refs, style=None):
         fixed = ("\n- these characters are given; use exactly these names and looks (you still "
                  "write their tag and voice):\n" +
                  "\n".join(f"  {r['name']}: {r['description']}" for r in refs))
-    lo, hi = max(2, round(seconds / 5)), max(3, round(seconds / 3))
-    raw = lemon.chat_json(PLAN.format(idea=idea, seconds=f"{seconds:g}", lo=lo, hi=hi, fixed=fixed),
-                          max_tokens=8000)
+    lo, hi = max(2, round(seconds / 5)), max(3, round(seconds / 2.5))
+    prompt = PLAN.format(idea=idea, seconds=f"{seconds:g}", lo=lo, hi=hi, fixed=fixed)
+    raw = lemon.chat_json(prompt, max_tokens=8000)
+    # Lines quoted in the idea must be spoken in the film; the planner sometimes drops them
+    norm = lambda t: re.sub(r"[^a-z0-9 ]", "", t.lower()).split()
+    for attempt in range(2):
+        spoken = " ".join(" ".join(norm(str((s.get("line") or {}).get("text", ""))))
+                          for s in raw.get("shots") or [] if isinstance(s.get("line"), dict))
+        missing = [q for q in re.findall(r'"([^"]{3,})"', idea) if " ".join(norm(q)) not in spoken]
+        if not missing:
+            break
+        print(f"  the plan left out {', '.join(repr(m) for m in missing)}; asking again", flush=True)
+        raw = lemon.chat_json(prompt + "\n- IMPORTANT: your previous plan left out these spoken lines; "
+                              "each must be a shot's \"line\", word for word: "
+                              + "; ".join(f'"{m}"' for m in missing), max_tokens=8000)
     shots = raw.get("shots") or []
     if len(shots) < 2:
         raise RuntimeError("the plan came back with fewer than two shots; run again")
@@ -399,6 +416,20 @@ def _take_key(prompt, W, H, frames, seed, keyframe):
                           + open(keyframe, "rb").read()).hexdigest()
 
 
+def _take_ok(stamp, prompt, W, H, frames, seed, keyframe):
+    """Is the take recorded in `stamp` usable for a shot needing `frames` frames? A take that
+    is long enough is reused (trimmed at the cut), so shortening a shot never re-renders it.
+    Stamps are 'v2|<key without length>|<frames rendered>'; older ones are a key that
+    includes the frame count."""
+    if not os.path.exists(stamp):
+        return False
+    st = open(stamp).read()
+    if st.startswith("v2|"):
+        _, key, n = st.split("|")
+        return key == _take_key(prompt, W, H, 0, seed, keyframe) and int(n) >= frames
+    return any(st == _take_key(prompt, W, H, f, seed, keyframe) for f in range(9, 8 * 26 + 2, 8) if f >= frames)
+
+
 def take_files(seg_dir, k):
     """Existing take numbers for shot k with a valid stamp file."""
     found = []
@@ -446,9 +477,10 @@ def render(name, story_dir, frame_path, load, save, a, log):
         for t in range(max(want, have)):
             seed = base + 100 * k + t + reseed.get(str(k), 0)
             clip = os.path.join(seg_dir, f"shot-{k:02d}-t{t}.webm")
-            key = _take_key(prompt, W, H, frames, seed, frame_path(k))
             stamp = clip + ".key"
-            if os.path.exists(clip) and os.path.exists(stamp) and open(stamp).read() == key:
+            key = f"v2|{_take_key(prompt, W, H, 0, seed, frame_path(k))}|{frames}"
+            need = round(s["seconds"] * fps) + 1   # frames used at the cut
+            if os.path.exists(clip) and _take_ok(stamp, prompt, W, H, need, seed, frame_path(k)):
                 valid.append(t)
                 continue
             if t >= want:   # an old extra take that's now stale: drop it
