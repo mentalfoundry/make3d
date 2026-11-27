@@ -465,14 +465,17 @@ function loadModelViewer() {
   document.head.appendChild(s);
 }
 
-function mediaHtml(rel, name, size) {
+function mediaHtml(rel, name, size, mtime) {
+  // ?v=<mtime> on what the page plays: a re-rendered file keeps its name, and browsers cache
+  // video in byte ranges, so without it they can splice the old file's pieces into the new one
   const url = outUrl(rel), dl = `<a href="${url}?dl=1" download>download</a>`;
+  const src = mtime ? `${url}?v=${Math.round(mtime)}` : url;
   const ext = name.toLowerCase().split(".").pop();
   const pick = /^(concept|pose)-option-\d+\.(png|jpe?g|webp)$/i.test(name) ? `<a class="pick" href="#art/${esc(rel)}">Make 3D from this</a>` : "";
   const cap = `<div class="cap"><span>${esc(name)}</span><span class="muted">${size != null ? fmtSize(size) + " · " : ""}${dl}</span></div>${pick}`;
-  if (["png", "jpg", "jpeg", "webp"].includes(ext)) return `<div class="media"><a href="${url}" target="_blank"><img loading="lazy" src="${url}" alt="${esc(name)}"></a>${cap}</div>`;
-  if (["webm", "mp4", "ogv"].includes(ext)) return `<div class="media wide"><video controls preload="metadata" src="${url}"></video>${cap}</div>`;
-  if (["wav", "ogg", "mp3"].includes(ext)) return `<div class="media"><audio controls preload="none" src="${url}"></audio>${cap}</div>`;
+  if (["png", "jpg", "jpeg", "webp"].includes(ext)) return `<div class="media"><a href="${src}" target="_blank"><img loading="lazy" src="${src}" alt="${esc(name)}"></a>${cap}</div>`;
+  if (["webm", "mp4", "ogv"].includes(ext)) return `<div class="media wide"><video controls preload="metadata" src="${src}"></video>${cap}</div>`;
+  if (["wav", "ogg", "mp3"].includes(ext)) return `<div class="media"><audio controls preload="none" src="${src}"></audio>${cap}</div>`;
   if (ext === "glb") { loadModelViewer(); return `<div class="media wide"><model-viewer src="${url}" camera-controls auto-rotate shadow-intensity="1" alt="${esc(name)}"></model-viewer>${cap}</div>`; }
   return null;
 }
@@ -500,7 +503,7 @@ async function outputsHtml(rel) {
   let glbShown = false;
   for (const f of shown) {
     const isRawGlb = f.name.toLowerCase() === "raw.glb";
-    const h = (isRawGlb && glbShown) ? null : mediaHtml(`${rel}/${f.name}`, f.name, f.size);
+    const h = (isRawGlb && glbShown) ? null : mediaHtml(`${rel}/${f.name}`, f.name, f.size, f.mtime);
     if (h) { previews.push(h); if (f.name.endsWith(".glb")) glbShown = true; } else others.push(f);
   }
   const rest = [...others, ...files.filter(f => f.dir || /\.(ogv|mkv|avi)$/i.test(f.name))];
@@ -708,7 +711,7 @@ async function storyPage(name) {
   // Rendered films first (full, then draft); the animatic (stills, for timing) last and labelled
   const vidRank = f => /-full\./.test(f) ? 0 : /-draft\./.test(f) ? 1 : /-animatic\./.test(f) ? 3 : 2;
   const vidsHtml = () => info.videos.filter(f => !f.endsWith(".ogv")).sort((a, b) => vidRank(a) - vidRank(b) || a.localeCompare(b))
-    .map(f => mediaHtml(`story/${name}/${f}`, f).replace(`<span>${esc(f)}</span>`, `<span>${esc(f)}${
+    .map(f => mediaHtml(`story/${name}/${f}`, f, null, info.mtimes[f]).replace(`<span>${esc(f)}</span>`, `<span>${esc(f)}${
       /-animatic\./.test(f) ? " · <b>animatic</b>: each shot's first frame held for its length (stills, to check timing)"
       : /-draft\./.test(f) ? " · <b>draft render</b> (low resolution)" : /-full\./.test(f) ? " · <b>full render</b>" : ""}</span>`)).join("");
   main.innerHTML = `<div class="stack">

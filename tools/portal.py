@@ -1035,10 +1035,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if os.path.isdir(p):
             return self.send(200, [entry(os.path.join(p, n)) for n in sorted(os.listdir(p))
                                    if not n.startswith(".")])
-        size = os.path.getsize(p)
+        st = os.stat(p)
+        size = st.st_size
+        etag = f'"{size:x}-{st.st_mtime_ns:x}"'   # changes when a file is re-rendered in place
         ctype = mimetypes.guess_type(p)[0] or "application/octet-stream"
         start, end, code = 0, size - 1, 200
         rng = self.headers.get("Range", "")
+        if self.headers.get("If-Range") not in (None, etag):
+            rng = ""   # the browser's cached pieces are of an older version: send it whole
+        if not rng and self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         m = re.fullmatch(r"bytes=(\d*)-(\d*)", rng.strip())
         if m and size:
             if m.group(1):
@@ -1054,6 +1064,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(end - start + 1))
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("ETag", etag)
+        self.send_header("Last-Modified", self.date_time_string(st.st_mtime))
         self.send_header("X-Content-Type-Options", "nosniff")
         if code == 206:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
