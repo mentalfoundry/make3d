@@ -195,6 +195,7 @@ def is_shots(sb):
 def draw_one(name, sb, i, seed, note="", adjust=False):
     if is_shots(sb):
         return shots.draw(sb, i, story_dir(name), seed, note=note,
+                          python=os.path.join(ROOT, "venv", "bin", "python"),
                           adjust_from=prev_path(name, i) if adjust else None)
     refs = ref_paths(name, sb)
     if adjust:   # edit the previous version of this keyframe
@@ -216,6 +217,9 @@ def draw_frames(name, sb, only=None, seed=None, tries=3, note="", adjust=False):
     and redrawn with a new seed up to `tries` times; the best attempt is kept."""
     seed = sb.get("seed", 42) if seed is None else seed
     checks = sb.setdefault("checks", {})
+    if is_shots(sb) and not adjust and shots.ensure_location(sb):   # older plans: add the set facts
+        shots.normalise(sb)
+        save(name, sb)
     for i in range(len(sb["keyframes"])):
         if only and i not in only:
             continue

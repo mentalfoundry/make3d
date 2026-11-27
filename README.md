@@ -220,9 +220,25 @@ from video models work. The older mode, one continuous take, is `--continuous` (
    gets a short visual tag ("the man in the navy suit and round glasses") and a voice, and
    the scene gets one **ambience** description.
 
+   **Continuity of the set.** The plan includes **location facts**: the things that must not
+   change between shots, such as the road layout and number of lanes, the trees and the parked
+   cars. It also includes 1–3 **camera views** (the main direction plus a reverse angle when a
+   shot looks the other way), and each shot is tagged with the view it faces. Flux draws an
+   empty **plate** of the set for each view (`location-<view>.png`). The reverse view is drawn
+   from the first, so it's the same place.
+
+   Each shot is then drawn **into** its plate: the people are placed in that exact
+   background, not a newly invented one. Closer shots get a centre crop of the plate,
+   blurred for close-ups, reactions and inserts, so they see less of the street and that
+   part is out of focus. Frame and video prompts ask for shallow depth of field on every
+   shot except wides. Storyboards planned before this get their facts and views added the
+   first time their frames are drawn.
+
    Flux draws each shot's **first frame**, using reference sheets only for the people in
-   that shot plus shot 0 for the location. The vision model checks it against the
-   description, the head count and fused or doubled people, and redraws weak ones. You get
+   that shot. The vision model checks it against the description, the head count, fused or
+   doubled people, and **the set**: it compares the background with the plate and flags
+   extra lanes, trees or cars. Wides, mediums and over-the-shoulders need set ≥ 6/10. Weak
+   frames are redrawn. You get
    `storyboard.png` and **`<name>-animatic.webm`**: the frames held for each shot's length
    with captions, so you can check the pacing before spending GPU time.
 2. **render:** each shot is rendered **on its own from its first frame** (no chaining, so
@@ -257,9 +273,15 @@ What we learned building it, and what still goes wrong:
 - **Name only the people in the shot.** If a shot's text names someone who isn't in it
   ("speaks to devman1" on a single), Flux draws them in and LTX cuts away to a new scene to
   show them. The pipeline now rewrites such names as "someone off-screen".
-- **Location plate.** The location reference is an empty set (`location.png`), not a shot
-  with people in it. With a shot as reference, single-person frames came out with the same
-  person twice.
+- **Location plates.** The location reference is an empty set, not a shot with people in
+  it: with a shot as reference, single-person frames came out with the same person twice. As
+  a loose reference ("use it for the place, not its framing"), Flux re-invented the street in
+  every shot, with extra trees, cars and lanes, so shots are now drawn into the plate itself.
+- **Punch in.** Each shot on the storyboard page has *Punch in* (1.1–1.4×, or a slow push
+  to 1.15× or 1.3×) and *Keep* (centre, left, right, top or bottom). It zooms into the
+  rendered shot when the shots are joined, cropping out a problem at the edge or tightening
+  the framing, with no re-render. It costs sharpness: about 1.25× is the most that looks
+  clean at full quality, and less in a draft.
 - **People inside cars** wouldn't draw: Flux stood them on the pavement. The planner now shows
   arrivals with tinted windows and door closes as inserts.
 - **Framing:** Flux still draws many "medium" shots full-length despite the framing text.

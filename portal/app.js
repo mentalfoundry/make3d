@@ -643,9 +643,13 @@ function renderFormHtml(sb) {
 
 const SHOT_SIZES = ["wide", "medium", "close-up", "insert", "over-the-shoulder", "reaction"];
 // A storyboard field by name: "image", "who" (a list), "line.text", "seconds", ...
-const getField = (k, f) => f === "who" ? (k.who || []).join(", ") : f.startsWith("line.") ? (k.line?.[f.slice(5)] ?? "") : String(k[f] ?? "");
+// "punchsel" is one select for punch + push: "1", "1.2", "push:1.15", ...
+const getField = (k, f) => f === "who" ? (k.who || []).join(", ") : f.startsWith("line.") ? (k.line?.[f.slice(5)] ?? "")
+  : f === "punchsel" ? ((k.push && k.punch > 1) ? `push:${k.punch}` : String(k.punch > 1 ? k.punch : 1)) : String(k[f] ?? "");
+const PUNCH_OPTIONS = [["1", "none"], ["1.1", "1.1×"], ["1.2", "1.2×"], ["1.3", "1.3×"], ["1.4", "1.4×"], ["push:1.15", "slow push to 1.15×"], ["push:1.3", "slow push to 1.3×"]];
 function setField(k, f, v) {
-  if (f === "who") k.who = v.split(",").map(x => x.trim()).filter(Boolean);
+  if (f === "punchsel") { k.push = v.startsWith("push:"); k.punch = +v.replace("push:", "") || 1; }
+  else if (f === "who") k.who = v.split(",").map(x => x.trim()).filter(Boolean);
   else if (f === "seconds") k.seconds = +v || k.seconds;
   else if (f.startsWith("line.")) { k.line = { ...(k.line || {}), [f.slice(5)]: v }; if (!k.line.text) k.line = null; }
   else k[f] = v;
@@ -673,6 +677,9 @@ async function storyPage(name) {
         <label class="small">Camera<input type="text" data-kf="${i}" data-f="camera" value="${esc(k.camera || "")}"></label>
         <label class="small">Seconds<input type="number" min="1" max="8" step="0.5" data-kf="${i}" data-f="seconds" value="${esc(k.seconds)}"></label>
         <label class="small">In shot<input type="text" data-kf="${i}" data-f="who" value="${esc((k.who || []).join(", "))}" title="Names from the cast: ${esc(castNames.join(", "))}"></label>
+        ${(sb.views || []).length > 1 ? `<label class="small">Camera faces<select data-kf="${i}" data-f="view">${sb.views.map(v => `<option value="${esc(v.id)}"${v.id === k.view ? " selected" : ""} title="${esc(v.looking)}">${esc(v.id)}</option>`).join("")}</select></label>` : ""}
+        <label class="small" title="Zoom into the rendered shot to crop out problems at the edge (applied when the shots are joined, no re-render)">Punch in<select data-kf="${i}" data-f="punchsel">${PUNCH_OPTIONS.map(([v, t]) => `<option value="${v}"${v === getField(k, "punchsel") ? " selected" : ""}>${t}</option>`).join("")}</select></label>
+        <label class="small" title="Which part of the picture the punch-in keeps">Keep<select data-kf="${i}" data-f="anchor">${["center", "left", "right", "top", "bottom"].map(a => `<option${a === (k.anchor || "center") ? " selected" : ""}>${a}</option>`).join("")}</select></label>
       </div>
       <label class="small">First frame<textarea data-kf="${i}" data-f="image" aria-label="shot ${i} first frame">${esc(k.image)}</textarea></label>
       <label class="small">Action<textarea data-kf="${i}" data-f="action" rows="2">${esc(k.action || "")}</textarea></label>
@@ -719,6 +726,8 @@ async function storyPage(name) {
       ${itemButtons(`story/${name}`, name)}</div>
     <div><h2>${esc(sb.title || name)}</h2><p class="muted">${esc(sb.idea || "")}</p>
       ${shotsMode ? `<p class="small muted">${(sb.cast || []).map(c => `<b>${esc(c.name)}</b> (${esc(c.tag)}${c.voice ? `; ${esc(c.voice)}` : ""})`).join("<br>")}<br>Setting: ${esc(sb.setting)}<br>Style: ${esc(sb.style)}</p>
+        <label class="small">Location facts (kept true in every shot)<textarea data-top="location_facts" rows="2">${esc(sb.location_facts || "")}</textarea></label>
+        ${info.plates?.length ? `<div class="plates">${info.plates.map(f => `<figure><a href="${outUrl(`story/${name}/${f}`)}?v=${Math.round(info.mtimes[f] || 0)}" target="_blank"><img src="${outUrl(`story/${name}/${f}`)}?v=${Math.round(info.mtimes[f] || 0)}" alt="${esc(f)}"></a><figcaption class="small muted">${esc(f.replace(/^location-|\.png$/g, ""))}: ${esc((sb.views || []).find(v => `location-${v.id}.png` === f)?.looking || "empty set")}</figcaption></figure>`).join("")}</div>` : ""}
         <label class="small">Ambience (under the whole scene)<textarea data-top="ambience" rows="1">${esc(sb.ambience || "")}</textarea></label>`
       : `<p class="small muted">Characters: ${esc(sb.characters)}<br>Setting: ${esc(sb.setting)}<br>Style: ${esc(sb.style)}</p>`}</div>
     <div id="sb-active"></div>

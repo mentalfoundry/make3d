@@ -702,6 +702,7 @@ def story_info(name):
                         {"take": int(m.group(2)), "mtime": round(os.stat(os.path.join(sd, f)).st_mtime)})
     return {"name": slug(name), "storyboard": json.load(open(sbp)), "takes": takes,
             "keyframes": [f for f in files if re.fullmatch(r"key-\d+\.png", f)],
+            "plates": [f for f in files if re.fullmatch(r"location-[\w-]+\.png", f)],
             "previous": [int(m.group(1)) for f in files if (m := re.fullmatch(r"key-(\d+)-prev\.png", f))],
             "videos": [f for f in files if f.endswith((".webm", ".ogv", ".mp4"))],
             "mtimes": {f: os.stat(os.path.join(d, f)).st_mtime for f in files}}
@@ -977,6 +978,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         s["seconds"] = min(8.0, max(1.0, float(s.get("seconds") or 3)))
                     except (TypeError, ValueError):
                         raise BadRequest("a shot's length must be a number of seconds") from None
+                    try:   # punch in: applied at the join
+                        s["punch"] = min(1.5, max(1.0, float(s.get("punch") or 1.0)))
+                    except (TypeError, ValueError):
+                        raise BadRequest("punch in must be a number") from None
+                    if s.get("anchor") not in (None, "center", "left", "right", "top", "bottom"):
+                        raise BadRequest("anchor must be center, left, right, top or bottom")
+                    s["push"] = bool(s.get("push"))
                     s["t"] = round(t, 2)
                     t += s["seconds"]
             elif len(sb["segments"]) != len(sb["keyframes"]) - 1:

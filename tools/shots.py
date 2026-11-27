@@ -31,6 +31,7 @@ FRAMING = {   # spelled out for Flux, which otherwise draws most shots full-leng
     "over-the-shoulder": "seen past the back of one person's shoulder and head, which fill one side of the frame in the foreground, out of focus; the other person faces the camera, framed from the waist up",
     "reaction": "close-up of one face reacting, head and shoulders fill the frame",
 }
+ANCHORS = {"center": (0.5, 0.5), "left": (0, 0.5), "right": (1, 0.5), "top": (0.5, 0), "bottom": (0.5, 1)}
 MIN_SECONDS, MAX_SECONDS = 1.0, 8.0
 WORDS_PER_SECOND = 2.5          # comfortable speech; a line needs words / 2.5 + ~1 s
 TAIL = 0.25                     # rendered past the cut: the last frames are the weakest
@@ -46,9 +47,12 @@ Reply with JSON only, no other text, in exactly this shape:
  "style": "one sentence: visual style, lighting, colour palette, lens (same for every shot)",
  "cast": [{{"name": "the character's name as used below", "look": "fixed, detailed visual description: build, skin, face, hair, every piece of clothing with colours", "tag": "4-8 word visual label that tells them apart, e.g. 'the man in the navy suit and round glasses'", "voice": "how they sound, e.g. 'warm, calm male voice, mid-thirties'"}}],
  "setting": "fixed description of the location, time of day and weather",
+ "location_facts": "the fixed physical facts of this place that must not change between shots: road layout and number of lanes, paving, what lines each side, where trees and parked vehicles are (or that there are none), landmarks; one or two sentences",
+ "views": [{{"id": "short-id", "looking": "which way the camera looks and what part of the place it sees; describe only the place, never people"}}],
  "ambience": "the constant background sound of this place for the whole scene (room tone, traffic, wind); no music, no voices",
  "shots": [{{
    "size": "one of: wide, medium, close-up, insert, over-the-shoulder, reaction",
+   "view": "the id of the view this shot's camera faces",
    "camera": "ONE camera move: static, slow push in, slow pull back, pan left, pan right, tilt up, tilt down, tracking alongside, or handheld",
    "who": ["names of the cast visible in this shot; [] for none"],
    "image": "the FIRST frame of this shot as a film still: framing, who is where (left/right), pose, expression, key props",
@@ -67,6 +71,9 @@ Rules (this is how good AI films are cut):
   a moment that has to land (an arrival, a bow, a final look, the last shot): 5-8 s;
   cut faster as tension builds, hold longer on the emotional beats and the ending;
   never three shots in a row of the same length; never more than 8 s;
+- define 1-3 camera views of the location (camera DIRECTIONS, not shot sizes): the direction
+  most shots face, plus the reverse angle if any shot looks the other way; give every shot
+  the view its camera faces;
 - shot 1 is a WIDE establishing shot showing the location and where everyone is; use another
   wide when people move to a new place;
 - mix shot sizes; never two shots in a row with the same size and the same people;
@@ -99,6 +106,13 @@ def normalise(sb):
         s["size"] = s.get("size") if s.get("size") in SIZES else "medium"
         s["camera"] = (s.get("camera") or "static").strip()
         s["who"] = [w for w in (s.get("who") or []) if w in names]
+        s["view"] = view_of(sb, s)
+        try:
+            s["punch"] = min(1.5, max(1.0, float(s.get("punch") or 1.0)))
+        except (TypeError, ValueError):
+            s["punch"] = 1.0
+        s["anchor"] = s.get("anchor") if s.get("anchor") in ANCHORS else "center"
+        s["push"] = bool(s.get("push"))
         line = s.get("line")
         if not (isinstance(line, dict) and str(line.get("text", "")).strip()):
             s["line"] = None
@@ -151,8 +165,11 @@ def plan(idea, seconds, refs, style=None):
         c.setdefault("tag", f"the {c['name']}")
         c.setdefault("voice", "")
         c.setdefault("look", "")
+    sb = {"cast": cast}
+    vs = clean_views(raw.get("views"), sb)
     sb = {"kind": "shots", "title": raw.get("title", ""), "style": style or raw.get("style", ""),
           "cast": cast, "setting": raw.get("setting", ""), "ambience": raw.get("ambience", ""),
+          "location_facts": str(raw.get("location_facts", "")).strip(), "views": vs,
           "keyframes": shots, "segments": []}
     sb["characters"] = " ".join(f"{c['name']}: {c['look']}" for c in cast)
     normalise(sb)
@@ -179,9 +196,45 @@ def tagged(text, cast, who=None):
     return text
 
 
+# How much of the view's plate each shot size shows (centre crop) and how blurred it is:
+# closer shots see less of the street, out of focus, the way a longer lens would.
+PLATE_CROP = {"wide": 1.0, "medium": 0.62, "over-the-shoulder": 0.62, "close-up": 0.45,
+              "reaction": 0.45, "insert": 0.4}
+PLATE_BLUR = {"wide": 0, "medium": 2, "over-the-shoulder": 3, "close-up": 6, "reaction": 6, "insert": 8}
+DOF_TEXT = "Shallow depth of field: the background is softly out of focus."
+
+
+def view_id(v, k=0):
+    return re.sub(r"[^a-z0-9-]", "", str(v or "").lower()) or f"view{k}"
+
+
+def clean_views(raw, sb):
+    """Views from the chat model: ids normalised, at most 3, and no people in the description
+    (it's used to draw the EMPTY set): sentences naming a cast member are dropped."""
+    names = [c["name"].lower() for c in sb.get("cast", [])]
+    out = []
+    for k, v in enumerate(raw or []):
+        if not isinstance(v, dict):
+            continue
+        looking = " ".join(x for x in re.split(r"(?<=[.;])\s+", str(v.get("looking", "")))
+                           if not any(n in x.lower() for n in names)).strip()
+        out.append({"id": view_id(v.get("id"), k), "looking": looking or "the location"})
+    return out[:3]
+
+
+def views(sb):
+    return sb.get("views") or [{"id": "main", "looking": "the main view of the location"}]
+
+
+def view_of(sb, s):
+    ids = [v["id"] for v in views(sb)]
+    v = view_id(s.get("view"))
+    return v if v in ids else ids[0]
+
+
 def frame_prompt(sb, i, n_refs_names, plate=False):
     """Flux prompt for shot i's first frame. n_refs_names: names of the reference sheets
-    passed, in order; with plate=True the empty-location image follows them."""
+    passed, in order; with plate=True the shot's background plate follows them."""
     s, cast = sb["keyframes"][i], slug_names(sb)
     who = [cast[w] for w in s.get("who", []) if w in cast]
     people = " ".join(f"{c['name']}: {c['look']}" for c in who)
@@ -192,35 +245,116 @@ def frame_prompt(sb, i, n_refs_names, plate=False):
                  f"exact face, hair, build, colours and costume, but NOT the sheet's pose, framing "
                  f"or plain background. Never mix features between characters. ")
     if plate:
-        intro += (f"Image {len(n_refs_names) + 1} is the empty location: use it only for the "
-                  f"place, lighting and colour, not its framing; it has no people in it. ")
+        blur = PLATE_BLUR[s["size"]] > 0
+        intro += (f"Image {len(n_refs_names) + 1} is the background plate for this shot: keep its "
+                  f"background exactly as it is, with the same buildings, trees, road, lanes, parked "
+                  f"vehicles and lighting in the same places{', softly out of focus' if blur else ''}, "
+                  f"and place the people into it. Do not add, remove or move background objects. ")
     count = {0: "No people in this shot, except hands if the description mentions them.",
              1: "Exactly one person is the subject of this shot."}.get(
         len(who), f"Exactly {len(who)} people are the subject of this shot, each appearing once.")
+    facts = f"Location facts that must stay true: {sb['location_facts']} " if sb.get("location_facts") else ""
+    dof = DOF_TEXT + " " if s["size"] != "wide" else ""
     return (f"{intro}{SIZE_WORDS[s['size']]} ({FRAMING[s['size']]}): {tagged(s['image'], cast, s.get('who') or []).strip().rstrip('.')}. {count} "
             + (f"Characters: {people} " if people else "")
-            + f"Setting: {sb['setting']} Style: {sb['style']} "
+            + f"Setting: {sb['setting']} {facts}{dof}Style: {sb['style']} "
             f"Cinematic film still, no text, no watermark, no borders.")
 
 
-def location_plate(sb, story_dir, seed):
-    """The empty set, drawn once: every shot's location reference. Using a shot with people
-    in it as the reference made Flux add a second copy of them."""
-    path = os.path.join(story_dir, "location.png")
-    key = sb.get("setting", "") + "|" + sb.get("style", "")
+LOCATION = """A film's shots all take place in one location:
+Setting: "{setting}"
+Shots:
+{shots}
+Reply with JSON only:
+{{"location_facts": "the fixed physical facts of this place that must not change between shots: road layout and number of lanes, paving, what lines each side, where trees and parked vehicles are (or that there are none), landmarks; one or two sentences",
+ "views": [{{"id": "short-id", "looking": "which way the camera looks and what part of the place it sees; describe only the place, never people"}}],
+ "shot_views": ["the view id for each shot, in order"]}}
+Views are camera DIRECTIONS in the place (not shot sizes, not close-ups): use 1-3, the
+main direction most shots face plus the reverse angle if any shot looks the other way.
+Exactly {n} entries in shot_views, each one of your view ids."""
+
+
+def ensure_location(sb):
+    """Storyboards planned before location plates had no location facts or camera views: ask
+    the chat model for them from the shot list. Returns True if the storyboard changed."""
+    if sb.get("location_facts") and sb.get("views"):
+        return False
+    shots = sb["keyframes"]
+    lines = "\n".join(f"{i}. {s['size']}: {s['image']}" for i, s in enumerate(shots))
+    r = lemon.chat_json(LOCATION.format(setting=sb.get("setting", ""), shots=lines, n=len(shots)))
+    sb["location_facts"] = sb.get("location_facts") or str(r.get("location_facts", "")).strip()
+    sb["views"] = clean_views(r.get("views"), sb) or views(sb)
+    for s, v in zip(shots, r.get("shot_views") or []):
+        s["view"] = v
+    for s in shots:
+        s["view"] = view_of(sb, s)
+    print(f"  location facts: {sb['location_facts']}")
+    for v in sb["views"]:
+        print(f"  view {v['id']}: {v['looking']}  (shots {', '.join(str(i) for i, s in enumerate(shots) if s['view'] == v['id'])})")
+    return True
+
+
+def _plate_key(sb, v):
+    return "|".join([sb.get("setting", ""), sb.get("style", ""), sb.get("location_facts", ""), v["id"], v["looking"]])
+
+
+def location_plate(sb, story_dir, view_id, seed):
+    """The empty set seen from one camera view (location-<view>.png), drawn once. The first
+    view is drawn from text; the others from the first, so it stays the same place."""
+    from storyboard import FRAME_SIZE
+    vs = views(sb)
+    v = next(x for x in vs if x["id"] == view_id)
+    path = os.path.join(story_dir, f"location-{v['id']}.png")
+    key = _plate_key(sb, v)
     if os.path.exists(path) and os.path.exists(path + ".key") and open(path + ".key").read() == key:
         return path
-    from storyboard import FRAME_SIZE
-    print("  location plate: drawing the empty set", flush=True)
-    png = lemon.generate_image(f"Wide establishing shot of an empty location, no people at all: "
-                               f"{sb['setting']} Style: {sb['style']} Cinematic film still, no "
-                               f"text, no watermark, no borders.", size=FRAME_SIZE, seed=seed)[0]
+    facts = f" Location facts: {sb['location_facts']}" if sb.get("location_facts") else ""
+    text = (f"Wide establishing shot of an empty location, no people at all. Camera view: {v['looking']}. "
+            f"{sb['setting']}{facts} Style: {sb['style']} Everything sharp, deep focus. Cinematic "
+            f"film still, no text, no watermark, no borders.")
+    print(f"  location plate: {v['id']} ({v['looking']})", flush=True)
+    if v is vs[0]:
+        png = lemon.generate_image(text, size=FRAME_SIZE, seed=seed)[0]
+    else:   # the same place from another angle
+        first = location_plate(sb, story_dir, vs[0]["id"], seed)
+        png = lemon.edit_image(f"Image 1 shows a location. Draw the SAME location from a different camera "
+                               f"view, with the same paving, road and lanes, buildings, trees, street "
+                               f"furniture and lighting. {text}", [first], size=FRAME_SIZE, seed=seed)[0]
     open(path, "wb").write(png)
     open(path + ".key", "w").write(key)
     return path
 
 
-def draw(sb, i, story_dir, seed, note="", adjust_from=None):
+def shot_plate(sb, story_dir, i, seed, python):
+    """Shot i's background plate: its view's plate, centre-cropped to the shot size and blurred
+    for close shots (plate-<view>-<size>.png)."""
+    s = sb["keyframes"][i]
+    view = view_of(sb, s)
+    full = location_plate(sb, story_dir, view, seed)
+    crop, blur = PLATE_CROP[s["size"]], PLATE_BLUR[s["size"]]
+    if crop >= 1 and not blur:
+        return full
+    out = os.path.join(story_dir, f"plate-{view}-{s['size']}.png")
+    if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(full):
+        return out
+    script = """
+import sys
+from PIL import Image, ImageFilter
+src, dst, crop, blur = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4])
+im = Image.open(src).convert('RGB')
+w, h = im.size
+cw, ch = int(w * crop), int(h * crop)
+x, y = (w - cw) // 2, int((h - ch) * 0.6)   # a little below centre: keep the ground people stand on
+im = im.crop((x, y, x + cw, y + ch)).resize((w, h), Image.LANCZOS)
+if blur:
+    im = im.filter(ImageFilter.GaussianBlur(blur))
+im.save(dst)
+"""
+    subprocess.run([python, "-I", "-c", script, full, out, str(crop), str(blur)], check=True)
+    return out
+
+
+def draw(sb, i, story_dir, seed, note="", adjust_from=None, python="python3"):
     """Draw shot i's first frame. Returns PNG bytes."""
     refs = shot_refs(sb, i, story_dir)
     names, paths = [n for n, _ in refs], [p for _, p in refs]
@@ -233,24 +367,25 @@ def draw(sb, i, story_dir, seed, note="", adjust_from=None):
                   f"and style, and change only this: {note} Style: {sb['style']} Cinematic film "
                   f"still, no text, no watermark, no borders.")
         return lemon.edit_image(prompt, paths + [adjust_from], size=FRAME_SIZE, seed=seed)[0]
-    plate = location_plate(sb, story_dir, seed)
+    plate = shot_plate(sb, story_dir, i, seed, python)
     prompt = frame_prompt(sb, i, names, plate=True)
     if note:
         prompt += f" Director's note for this drawing, follow it closely: {note}"
-    images = paths + [plate]
-    if images:
-        return lemon.edit_image(prompt, images, size=FRAME_SIZE, seed=seed)[0]
-    return lemon.generate_image(prompt, size=FRAME_SIZE, seed=seed)[0]
+    return lemon.edit_image(prompt, paths + [plate], size=FRAME_SIZE, seed=seed)[0]
 
 
-CHECK = """{sheets}The last image is the first frame of a film shot. It was supposed to show:
+CHECK = """{sheets}{plate}The last image is the first frame of a film shot. It was supposed to show:
 "{size}: {image}"
 {people}
 Reply with JSON only:
-{{"matches": 0-10, "people": N, "severe": "..."}}
+{{"matches": 0-10, "people": N, "set": 0-10, "set_diff": "...", "severe": "..."}}
 matches: how well the image shows what it was supposed to show (framing, who, poses, props).
 people: how many distinct people are clearly visible as subjects (ignore distant background
   extras and hands at the frame edge).
+set: how well the background matches the empty set (image {plate_n}), allowing for the shot being
+  closer or out of focus: 10 = the same place; deduct for extra or missing road lanes, buildings,
+  trees or parked vehicles, a different road layout or different paving. 10 if it can't be seen.
+set_diff: the main background difference in a few words, or "".
 severe: ONLY these defects, otherwise "": two people fused into one body or sharing a head;
   one person appearing twice; a person with the wrong head{swap}; captions, subtitles or a watermark
   over the picture (logos and labels on objects are fine)."""
@@ -269,22 +404,31 @@ def check(sb, i, path, story_dir=None):
                   + " " if refs else "")
         swap = ("; a person with another character's face, hair or clothes (compare with the "
                 "character sheets)" if len(refs) > 1 else "")
-        txt = lemon.describe_image([p for _, p in refs] + [path],
-                                   CHECK.format(sheets=sheets, swap=swap, size=SIZE_WORDS[s["size"]],
+        plate = (os.path.join(story_dir, f"location-{view_of(sb, s)}.png") if story_dir else None)
+        plate = plate if plate and os.path.exists(plate) else None
+        plate_n = len(refs) + 1
+        ptxt = f"Image {plate_n} is the empty set this shot takes place in, seen from further back. " if plate else ""
+        txt = lemon.describe_image([p for _, p in refs] + ([plate] if plate else []) + [path],
+                                   CHECK.format(sheets=sheets, plate=ptxt, plate_n=plate_n, swap=swap,
+                                                size=SIZE_WORDS[s["size"]],
                                                 image=tagged(s["image"], slug_names(sb), s.get("who") or []), people=people),
                                    max_tokens=300)
         r = json.loads(txt[txt.index("{"):txt.rindex("}") + 1])
         match = float(r.get("matches", 0))
+        setm = float(r.get("set", 10)) if plate else 10.0
+        set_diff = str(r.get("set_diff", "")).strip().strip(".")
         got = int(float(r.get("people", want)))
         severe = str(r.get("severe", "")).strip().strip(".")
     except Exception as e:
         return 0, f"check failed ({str(e)[:80]})", True
     bad = severe and severe.lower() not in ("none", "no", "n/a", "false")
     wrong_count = s["size"] not in ("insert", "wide") and want and got != want
-    ok = match >= 5 and not bad and not wrong_count
-    note = (f"matches {match:g}/10" + (f", {got} people (want {want})" if wrong_count else "")
-            + (f", {severe}" if bad else ""))
-    return match - (20 if bad else 0) - (5 if wrong_count else 0), note, ok
+    # the background only has to match where it's sharp enough to notice
+    wrong_set = s["size"] in ("wide", "medium", "over-the-shoulder") and setm < 6
+    ok = match >= 5 and not bad and not wrong_count and not wrong_set
+    note = (f"matches {match:g}/10, set {setm:g}/10" + (f" ({set_diff})" if set_diff and setm < 8 else "")
+            + (f", {got} people (want {want})" if wrong_count else "") + (f", {severe}" if bad else ""))
+    return match + 0.5 * setm - (20 if bad else 0) - (5 if wrong_count else 0), note, ok
 
 
 # ---------------------------------------------------------------- animatic
@@ -371,6 +515,8 @@ def video_prompt(sb, k):
     snd = [x.strip().rstrip(".") for x in (_sub_names(s.get("sound") or "", cast, who), sb.get("ambience")) if x and x.strip()]
     if snd:
         parts.append("Sound: " + "; ".join(x[0].lower() + x[1:] for x in snd) + ".")
+    if s["size"] != "wide":
+        parts.append(DOF_TEXT)
     parts.append(sb.get("style", ""))
     text = " ".join(p.strip() for p in parts if p)
     text = re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
@@ -428,6 +574,19 @@ def _take_ok(stamp, prompt, W, H, frames, seed, keyframe):
         _, key, n = st.split("|")
         return key == _take_key(prompt, W, H, 0, seed, keyframe) and int(n) >= frames
     return any(st == _take_key(prompt, W, H, f, seed, keyframe) for f in range(9, 8 * 26 + 2, 8) if f >= frames)
+
+
+def punch_filter(s, W, H, d):
+    """Punch in: crop into the shot and enlarge it back to W x H, keeping the anchor side.
+    With push the zoom grows from 1 to `punch` over the shot (a slow digital push-in).
+    Applied at the join, so changing it never re-renders the shot."""
+    z, push = float(s.get("punch") or 1.0), bool(s.get("push"))
+    if z <= 1.0:
+        return ""
+    ax, ay = ANCHORS.get(s.get("anchor"), (0.5, 0.5))
+    zt = f"(1+{z - 1:.4f}*t/{d:.4f})" if push else f"{z:.4f}"
+    return (f",scale=w='trunc({W}*{zt}/2)*2':h='trunc({H}*{zt}/2)*2':eval=frame:flags=lanczos,"
+            f"crop={W}:{H}:x='(iw-{W})*{ax}':y='(ih-{H})*{ay}'")
 
 
 def take_files(seg_dir, k):
@@ -545,7 +704,8 @@ def render(name, story_dir, frame_path, load, save, a, log):
         nf = round(s["seconds"] * fps)
         d = nf / fps
         # trim to the shot's length (drops the tail); tiny audio fades stop clicks at the cuts
-        chains.append(f"[{k}:v]trim=end_frame={nf},setpts=PTS-STARTPTS,scale={W}:{H},setsar=1,fps={fps}[v{k}];"
+        chains.append(f"[{k}:v]trim=end_frame={nf},setpts=PTS-STARTPTS,scale={W}:{H},setsar=1,fps={fps}"
+                      f"{punch_filter(s, W, H, d)}[v{k}];"
                       f"[{k}:a]atrim=duration={d:.4f},asetpts=PTS-STARTPTS,aresample=48000,"
                       f"afade=t=in:d=0.02,afade=t=out:st={max(0, d - 0.03):.4f}:d=0.03[a{k}]")
     total = sum(round(s["seconds"] * fps) for s in shots) / fps
