@@ -280,18 +280,19 @@ const pages = {
       F.text("name", "Name", { req: true, ph: "knight-vs-dragon" }),
       F.area("idea", "What happens", { req: true, ph: "a <knight> fights a <goblin> in a ruined castle courtyard at dusk", help: "Type < to cast a 3D model from your library: its A-pose sheet keeps the character looking the same in every shot." }),
       F.files("refs", "Other reference images", { help: "Optional, for characters that aren't in the library. Name each file after its placeholder: dragon.png for <dragon>." }),
-      F.num("seconds", "Length (s)", { min: 5, max: 120, ph: "30" }),
-      F.num("every", "Keyframe every (s)", { min: 2, max: 10, ph: "5" }),
+      F.num("seconds", "Length (s)", { min: 5, max: 120, ph: "30", help: "A target: each beat gets the time it needs, so the plan may come out shorter" }),
+      F.check("continuous", "One continuous take", { help: "Old mode: no cuts, a keyframe every few seconds. Leave off for a shot list with cuts (much better results)" }),
+      F.num("every", "Keyframe every (s)", { min: 2, max: 10, ph: "5", help: "One continuous take only" }),
       F.text("style", "Style", { ph: "hand-painted fantasy art, soft light" }),
       F.num("tries", "Redraws per keyframe", { min: 1, max: 5, step: 1, ph: "3" }),
       F.num("seed", "Seed", { min: 0, step: 1, ph: "42" }),
       F.check("force", "Replace if it exists"),
     ];
     main.innerHTML = `<div class="stack">
-      <div><h2>Storyboard</h2><p class="muted">Plan a long video as keyframes every few seconds, check and edit them, then render the whole thing with matching sound.</p></div>
+      <div><h2>Storyboard</h2><p class="muted">Plan a film as a shot list (wides, close-ups, inserts and reactions, 2–6 s each), check each shot's first frame and the timed animatic, then render every shot and cut them together with sound.</p></div>
       ${stories.length ? `<div class="tiles">${stories.map(tile).join("")}</div>` : ""}
       <form class="card stack" id="tool-form"><h3>New storyboard</h3><div class="grid">${fields.map(fieldHtml).join("")}</div>
-        <div class="row"><button class="primary" type="submit">Plan and draw keyframes</button><span class="error" id="form-err"></span></div>
+        <div class="row"><button class="primary" type="submit">Plan and draw shots</button><span class="error" id="form-err"></span></div>
       </form></div>`;
     if (stories.length) bindItemButtons(main.querySelector(".tiles"), () => pages.story());
     const form = $("#tool-form");
@@ -574,7 +575,7 @@ async function updateBadge() {
 
 async function videoFromStoryboard(name, switcher, gpuNote) {
   const stories = (await api("api/library")).filter(x => x.kind === "story");
-  const head = `<div class="stack"><div><h2>Video with sound</h2><p class="muted">Render a storyboard into one video: each keyframe becomes a shot, joined into a continuous scene with sound.</p></div>${switcher}`;
+  const head = `<div class="stack"><div><h2>Video with sound</h2><p class="muted">Render a storyboard into one video: each shot is rendered from its first frame and the shots are cut together with sound.</p></div>${switcher}`;
   if (!stories.length) {
     main.innerHTML = head + `<div class="card"><p>No storyboards yet.</p><p><a href="#story">Make a storyboard</a> from an idea first: it plans the shots and draws a keyframe for each, which you can check and edit before rendering.</p></div></div>`;
     return;
@@ -585,7 +586,8 @@ async function videoFromStoryboard(name, switcher, gpuNote) {
   const sb = info.storyboard, checks = sb.checks || {};
   const n = sb.keyframes.length, drawn = info.keyframes.length;
   const weak = Object.values(checks).filter(c => c && !c.ok).length;
-  const len = sb.keyframes[n - 1]?.t ?? 0;
+  const shotsMode = sb.kind === "shots";
+  const len = shotsMode ? sb.keyframes.reduce((a, k) => a + (+k.seconds || 0), 0) : (sb.keyframes[n - 1]?.t ?? 0);
   const strip = sb.keyframes.map((k, i) => {
     const f = `key-${String(i).padStart(2, "0")}.png`;
     return info.keyframes.includes(f) ? `<img src="${outUrl(`story/${name}/${f}`)}?v=${Math.round(info.mtimes[f] || 0)}" alt="keyframe ${i}" title="${esc(k.t + "s: " + k.image)}">` : `<div class="missing">${i}</div>`;
@@ -594,21 +596,21 @@ async function videoFromStoryboard(name, switcher, gpuNote) {
   main.innerHTML = head + `<div class="notice small">${gpuNote} A full render takes roughly 1.5 minutes per second of video; a draft about 40% of that.</div>
     <div class="card stack">
       <label>Storyboard<select id="sb-pick">${stories.map(x => `<option value="${esc(x.name)}"${x.name === name ? " selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
-      <div><b>${esc(sb.title || name)}</b> <span class="muted small">· ${len}s · ${n} keyframes · ${n - 1} shots</span>
+      <div><b>${esc(sb.title || name)}</b> <span class="muted small">· ${len}s · ${shotsMode ? `${n} shots` : `${n} keyframes · ${n - 1} segments, one take`}</span>
         <p class="muted small" style="margin:4px 0 0">${esc(sb.idea || "")}</p></div>
       <div class="kf-strip">${strip}</div>
       ${drawn < n ? `<p class="error">${n - drawn} keyframe(s) aren't drawn yet. Draw them on the storyboard page first.</p>` : ""}
       ${weak ? `<p class="small" style="color:var(--warn)">${weak} keyframe(s) flagged WEAK by the check. Look at them before a full render.</p>` : ""}
       <p class="small"><a href="#story/${encodeURIComponent(name)}">Edit this storyboard</a> (keyframes, shot text, sounds) · <a href="#story">New storyboard</a>${vids.length ? ` · already rendered: ${vids.map(v => `<a href="${outUrl(`story/${name}/${v}`)}" target="_blank">${esc(v)}</a>`).join(", ")}` : ""}</p>
     </div>
-    ${renderFormHtml()}</div>`;
+    ${renderFormHtml(sb)}</div>`;
   $("#sb-pick").onchange = e => { location.hash = `#video/story/${encodeURIComponent(e.target.value)}`; };
   const rf = $("#render-form");
   if (drawn < n) rf.querySelector("button[type=submit]").disabled = true;
   rf.onsubmit = async e => {
     e.preventDefault(); $("#render-err").textContent = "";
     try {
-      const job = await api("api/run/storyboard", { name, step: "render", ...await formValues(rf, RENDER_FIELDS) });
+      const job = await api("api/run/storyboard", { name, step: "render", ...await formValues(rf, renderFields(sb)) });
       location.hash = `#jobs/${job.id}`;
     } catch (err) { $("#render-err").textContent = err.message; }
   };
@@ -622,16 +624,61 @@ const RENDER_FIELDS = [
   F.text("music", "Music bed", { ph: "epic orchestral battle music", help: "Optional, ACE-Step" }),
   F.check("classic", "Classic segments", { help: "Pin both ends of each segment instead of continuing" }),
 ];
-function renderFormHtml() {
+const SHOT_RENDER_FIELDS = [
+  F.check("draft", "Draft", { value: true, help: "Low resolution, about 2.5× faster, one take per shot" }),
+  F.num("takes", "Takes per shot", { min: 1, max: 4, step: 1, ph: "draft 1, full 2", help: "The vision model keeps the best; you can switch takes below" }),
+  F.text("only", "Re-render shots", { ph: "e.g. 2,5", help: "New takes with a new seed" }),
+  F.text("music", "Music bed", { ph: "tense synth pulse", help: "Optional, ACE-Step" }),
+  F.check("no_ambience", "No ambience track", { help: "Leave out the background sound under the whole scene" }),
+];
+const renderFields = sb => sb?.kind === "shots" ? SHOT_RENDER_FIELDS : RENDER_FIELDS;
+function renderFormHtml(sb) {
   return `<form class="card stack" id="render-form"><h3>Render</h3>
-      <div class="grid">${RENDER_FIELDS.map(fieldHtml).join("")}</div>
+      <div class="grid">${renderFields(sb).map(fieldHtml).join("")}</div>
       <div class="row"><button class="primary" type="submit">Render</button><span class="error" id="render-err"></span></div></form>`;
+}
+
+const SHOT_SIZES = ["wide", "medium", "close-up", "insert", "over-the-shoulder", "reaction"];
+// A storyboard field by name: "image", "who" (a list), "line.text", "seconds", ...
+const getField = (k, f) => f === "who" ? (k.who || []).join(", ") : f.startsWith("line.") ? (k.line?.[f.slice(5)] ?? "") : String(k[f] ?? "");
+function setField(k, f, v) {
+  if (f === "who") k.who = v.split(",").map(x => x.trim()).filter(Boolean);
+  else if (f === "seconds") k.seconds = +v || k.seconds;
+  else if (f.startsWith("line.")) { k.line = { ...(k.line || {}), [f.slice(5)]: v }; if (!k.line.text) k.line = null; }
+  else k[f] = v;
 }
 
 async function storyPage(name) {
   let info = await api(`api/story/${encodeURIComponent(name)}`);
   let sb = info.storyboard;
+  const shotsMode = sb.kind === "shots";
+  const castNames = (sb.cast || []).map(c => c.name);
   const kfile = i => `key-${String(i).padStart(2, "0")}.png`;
+  // Rendered takes of shot i, full quality first; the one in use is marked, the others can be picked
+  const takesHtml = i => ["full", "draft"].filter(tag => info.takes?.[tag]?.[i]).map(tag => {
+    const list = info.takes[tag][i], pick = info.storyboard.takes?.[tag]?.[i];
+    return `<div class="small muted">${tag === "full" ? "Full" : "Draft"} take${list.length > 1 ? "s" : ""}${pick?.weak ? ` <span class="flag weak">WEAK: every take scored low; re-render this shot or make its action more visible</span>` : ""}</div><div class="take-row">${list.map(({ take, mtime }) => {
+      const using = pick?.take === take, sc = pick?.scores?.[take];
+      return `<div class="take${using ? " chosen" : ""}"><video src="${outUrl(`story/${name}/shots-${tag}/shot-${String(i).padStart(2, "0")}-t${take}.webm`)}?v=${mtime}" controls preload="metadata" playsinline></video>
+        <div class="row small spread"><span>Take ${take + 1}${using ? (pick.by === "you" ? " · your pick" : list.length > 1 ? " · best" : "") : ""}</span>${list.length > 1 && !using ? `<button class="small ghost use" data-i="${i}" data-t="${take}" data-tag="${tag}">Use this</button>` : ""}</div>
+        ${sc?.note ? `<div class="muted small">${esc(sc.note)}</div>` : ""}</div>`;
+    }).join("")}</div>`;
+  }).join("");
+  const shotFieldsHtml = (k, i) => `
+      <div class="grid shot-meta">
+        <label class="small">Shot size<select data-kf="${i}" data-f="size">${SHOT_SIZES.map(z => `<option${z === k.size ? " selected" : ""}>${z}</option>`).join("")}</select></label>
+        <label class="small">Camera<input type="text" data-kf="${i}" data-f="camera" value="${esc(k.camera || "")}"></label>
+        <label class="small">Seconds<input type="number" min="1.5" max="8" step="0.5" data-kf="${i}" data-f="seconds" value="${esc(k.seconds)}"></label>
+        <label class="small">In shot<input type="text" data-kf="${i}" data-f="who" value="${esc((k.who || []).join(", "))}" title="Names from the cast: ${esc(castNames.join(", "))}"></label>
+      </div>
+      <label class="small">First frame<textarea data-kf="${i}" data-f="image" aria-label="shot ${i} first frame">${esc(k.image)}</textarea></label>
+      <label class="small">Action<textarea data-kf="${i}" data-f="action" rows="2">${esc(k.action || "")}</textarea></label>
+      <div class="grid shot-line">
+        <label class="small">Speaker<select data-kf="${i}" data-f="line.speaker"><option value="">nobody</option>${castNames.map(c => `<option${c === k.line?.speaker ? " selected" : ""}>${esc(c)}</option>`).join("")}</select></label>
+        <label class="small">Spoken line<input type="text" data-kf="${i}" data-f="line.text" value="${esc(k.line?.text || "")}" placeholder="no dialogue"></label>
+      </div>
+      <label class="small">Sound<textarea data-kf="${i}" data-f="sound" rows="1">${esc(k.sound || "")}</textarea></label>
+      <div class="takes stack" data-takes="${i}">${takesHtml(i)}</div>`;
   const flagHtml = i => {
     const c = (info.storyboard.checks || {})[String(i)];
     return c ? `<span class="flag ${c.ok ? "ok" : "weak"}">${c.ok ? "✓" : "WEAK"} ${esc(c.note || "")}</span>` : "";
@@ -643,10 +690,10 @@ async function storyPage(name) {
       : `<div class="thumb" style="aspect-ratio:3/2;background:var(--panel-2)"></div>`;
   };
   const kfs = sb.keyframes.map((k, i) => `<div class="kf" data-card="${i}"><div class="kf-img">${imgHtml(i)}<div class="busy" hidden><div class="spinner" aria-hidden="true"></div><span class="busy-text">Redrawing…</span></div></div><div class="body stack">
-      <div class="row spread"><b>Keyframe ${i} · ${k.t}s</b><button class="small ghost undo" data-i="${i}" ${info.previous.includes(i) ? "" : "hidden"} title="Swap back to the version before the last redraw (click again to swap forward)">Undo redraw</button></div>
+      <div class="row spread"><b>${shotsMode ? `Shot ${i} · ${k.t}s` : `Keyframe ${i} · ${k.t}s`}</b><button class="small ghost undo" data-i="${i}" ${info.previous.includes(i) ? "" : "hidden"} title="Swap back to the version before the last redraw (click again to swap forward)">Undo redraw</button></div>
       <div class="flagbox">${flagHtml(i)}</div>
-      <label class="small">What it shows<textarea data-kf="${i}" aria-label="keyframe ${i} description">${esc(k.image)}</textarea></label>
-      <details class="redraw-box"><summary>Redraw this keyframe</summary><div class="stack">
+      ${shotsMode ? shotFieldsHtml(k, i) : `<label class="small">What it shows<textarea data-kf="${i}" data-f="image" aria-label="keyframe ${i} description">${esc(k.image)}</textarea></label>`}
+      <details class="redraw-box"><summary>Redraw this ${shotsMode ? "first frame" : "keyframe"}</summary><div class="stack">
         <label class="small">Direction for this redraw<span class="help">One-off instructions, e.g. "the dragon on the right, more fire". For a big camera change, edit the text above instead: it outweighs a direction.</span>
           <textarea data-note="${i}" rows="2" placeholder="optional for a new drawing; required to adjust"></textarea></label>
         <div class="row small">
@@ -664,26 +711,31 @@ async function storyPage(name) {
     <div class="row spread"><p class="small" style="margin:0"><a href="#story">Storyboards</a> / <b>${esc(name)}</b> · <a href="#library/story/${encodeURIComponent(name)}">all files</a></p>
       ${itemButtons(`story/${name}`, name)}</div>
     <div><h2>${esc(sb.title || name)}</h2><p class="muted">${esc(sb.idea || "")}</p>
-      <p class="small muted">Characters: ${esc(sb.characters)}<br>Setting: ${esc(sb.setting)}<br>Style: ${esc(sb.style)}</p></div>
+      ${shotsMode ? `<p class="small muted">${(sb.cast || []).map(c => `<b>${esc(c.name)}</b> (${esc(c.tag)}${c.voice ? `; ${esc(c.voice)}` : ""})`).join("<br>")}<br>Setting: ${esc(sb.setting)}<br>Style: ${esc(sb.style)}</p>
+        <label class="small">Ambience (under the whole scene)<textarea data-top="ambience" rows="1">${esc(sb.ambience || "")}</textarea></label>`
+      : `<p class="small muted">Characters: ${esc(sb.characters)}<br>Setting: ${esc(sb.setting)}<br>Style: ${esc(sb.style)}</p>`}</div>
     <div id="sb-active"></div>
     <div class="media-grid" id="sb-vids">${vidsHtml()}</div>
-    ${renderFormHtml()}
-    <div class="row spread"><h3 style="margin:0">Keyframes</h3><span class="row"><span class="muted small" id="sb-polled"></span><button class="small" id="redraw-all">Redraw all</button></span></div>
+    ${renderFormHtml(sb)}
+    <div class="row spread"><h3 style="margin:0">${shotsMode ? "Shots" : "Keyframes"}</h3><span class="row"><span class="muted small" id="sb-polled"></span><button class="small" id="redraw-all">Redraw all</button></span></div>
     <div class="kf-grid">${kfs}</div>
-    <div class="card stack"><h3>Segments</h3>${segs}</div>
-    <div class="row"><button class="primary" id="save">Save text changes</button><span class="muted small">Redrawing a keyframe saves your text first. Segments re-render automatically when their text changes.</span><span class="error" id="save-err"></span></div>
+    ${shotsMode ? "" : `<div class="card stack"><h3>Segments</h3>${segs}</div>`}
+    <div class="row"><button class="primary" id="save">Save text changes</button><span class="muted small">${shotsMode ? "Redrawing saves your text first. A shot re-renders when its first frame or text changes; a changed first-frame description needs a redraw." : "Redrawing a keyframe saves your text first. Segments re-render automatically when their text changes."}</span><span class="error" id="save-err"></span></div>
   </div>`;
   bindItemButtons(main.querySelector(".item-actions"), (p, n) => { location.hash = p ? `#story/${encodeURIComponent(n)}` : "#story"; });
-  main.querySelectorAll("textarea[data-kf], textarea[data-seg]").forEach(t => { t.dataset.orig = t.value; });
+  const FIELDS = "[data-kf], [data-seg], [data-top]";
+  main.querySelectorAll(FIELDS).forEach(t => { t.dataset.orig = t.value; });
 
   const saveText = async () => {
     const next = JSON.parse(JSON.stringify(info.storyboard));
     let changed = false;
-    main.querySelectorAll("[data-kf]").forEach(t => { if (t.value.trim() !== t.dataset.orig.trim()) changed = true; next.keyframes[+t.dataset.kf].image = t.value.trim(); });
-    main.querySelectorAll("[data-seg]").forEach(t => { if (t.value.trim() !== t.dataset.orig.trim()) changed = true; next.segments[+t.dataset.seg][t.dataset.f] = t.value.trim(); });
+    const edited = t => { if (t.value.trim() !== t.dataset.orig.trim()) { changed = true; return true; } };
+    main.querySelectorAll("[data-kf]").forEach(t => { if (edited(t)) setField(next.keyframes[+t.dataset.kf], t.dataset.f || "image", t.value.trim()); });
+    main.querySelectorAll("[data-seg]").forEach(t => { if (edited(t)) next.segments[+t.dataset.seg][t.dataset.f] = t.value.trim(); });
+    main.querySelectorAll("[data-top]").forEach(t => { if (edited(t)) next[t.dataset.top] = t.value.trim(); });
     if (!changed) return false;
     await api(`api/story/${encodeURIComponent(name)}`, { storyboard: next });
-    main.querySelectorAll("textarea[data-kf], textarea[data-seg]").forEach(t => { t.dataset.orig = t.value; });
+    main.querySelectorAll(FIELDS).forEach(t => { t.dataset.orig = t.value; });
     info.storyboard = next;
     return true;
   };
@@ -710,8 +762,21 @@ async function storyPage(name) {
   const rf = $("#render-form");
   rf.onsubmit = async e => {
     e.preventDefault(); $("#render-err").textContent = "";
-    try { await run({ step: "render", ...await formValues(rf, RENDER_FIELDS) }); } catch (err) { $("#render-err").textContent = err.message; }
+    try { await run({ step: "render", ...await formValues(rf, renderFields(sb)) }); } catch (err) { $("#render-err").textContent = err.message; }
   };
+  // Use another take of a shot: record the pick, then re-join (the shots are cached, so it's quick)
+  main.addEventListener("click", async e => {
+    const b = e.target.closest("button.use");
+    if (!b) return;
+    b.disabled = true;
+    try {
+      const draft = b.dataset.tag === "draft";
+      await api(`api/story/${encodeURIComponent(name)}/pick`, { shot: +b.dataset.i, take: +b.dataset.t, draft });
+      const v = await formValues(rf, renderFields(sb));
+      delete v.only;
+      await run({ step: "render", ...v, draft });
+    } catch (err) { b.disabled = false; alert(err.message); }
+  });
   $("#save").onclick = async () => {
     $("#save-err").textContent = "";
     try { await saveText(); $("#save").textContent = "Saved"; setTimeout(() => $("#save") && ($("#save").textContent = "Save text changes"), 1500); }
@@ -757,8 +822,12 @@ async function storyPage(name) {
       card.querySelector(".flagbox").innerHTML = flagHtml(i);
       card.querySelector(".undo").hidden = !next.previous.includes(i);
       card.querySelector(`input[name="mode-${i}"][value="adjust"]`).disabled = !next.keyframes.includes(f);
-      const t = card.querySelector("[data-kf]");   // server text changed and not being edited here
-      if (t.value === t.dataset.orig && document.activeElement !== t && k.image !== t.dataset.orig) { t.value = t.dataset.orig = k.image; }
+      card.querySelectorAll("[data-kf]").forEach(t => {   // server text changed and not being edited here
+        const v = getField(k, t.dataset.f || "image");
+        if (t.value === t.dataset.orig && document.activeElement !== t && v !== t.dataset.orig) { t.value = t.dataset.orig = v; }
+      });
+      const tk = card.querySelector(".takes");
+      if (tk && JSON.stringify([old.takes?.full?.[i], old.takes?.draft?.[i], old.storyboard.takes]) !== JSON.stringify([next.takes?.full?.[i], next.takes?.draft?.[i], next.storyboard.takes])) tk.innerHTML = takesHtml(i);
     });
     const vids = next.videos.map(v => v + next.mtimes[v]).join();
     if (vids !== old.videos.map(v => v + old.mtimes[v]).join()) $("#sb-vids").innerHTML = vidsHtml();

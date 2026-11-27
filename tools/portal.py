@@ -361,6 +361,7 @@ def build_job(tool, form, job_id):
             opt("seed", "--seed", int, 0, 2 ** 31)
             opt("tries", "--tries", int, 1, 5)
             flag("force", "--force")
+            flag("continuous", "--continuous")
             title = f"Storyboard: {idea}"
         elif step == "frames":
             args += ["frames", name]
@@ -391,6 +392,8 @@ def build_job(tool, form, job_id):
             opt("music_db", "--music-db", float, 0, 40)
             opt("end_strength", "--end-strength", float, 0, 1)
             flag("classic", "--classic")
+            opt("takes", "--takes", int, 1, 4)
+            flag("no_ambience", "--no-ambience")
             title = f"Render {'draft' if form.get('draft') else 'full'}: {name}"
         else:
             raise BadRequest("unknown storyboard step")
@@ -688,7 +691,16 @@ def story_info(name):
     if not os.path.exists(sbp):
         return None
     files = sorted(os.listdir(d))
-    return {"name": slug(name), "storyboard": json.load(open(sbp)),
+    takes = {}   # shots mode: {"draft"|"full": {shot: [take numbers]}}
+    for tag in ("draft", "full"):
+        sd = os.path.join(d, f"shots-{tag}")
+        if os.path.isdir(sd):
+            for f in sorted(os.listdir(sd)):
+                m = re.fullmatch(r"shot-(\d+)-t(\d+)\.webm", f)
+                if m and os.path.exists(os.path.join(sd, f + ".key")):
+                    takes.setdefault(tag, {}).setdefault(str(int(m.group(1))), []).append(
+                        {"take": int(m.group(2)), "mtime": round(os.stat(os.path.join(sd, f)).st_mtime)})
+    return {"name": slug(name), "storyboard": json.load(open(sbp)), "takes": takes,
             "keyframes": [f for f in files if re.fullmatch(r"key-\d+\.png", f)],
             "previous": [int(m.group(1)) for f in files if (m := re.fullmatch(r"key-(\d+)-prev\.png", f))],
             "videos": [f for f in files if f.endswith((".webm", ".ogv", ".mp4"))],
@@ -928,13 +940,46 @@ class Handler(http.server.BaseHTTPRequestHandler):
             os.replace(sbp + ".tmp", sbp)
             self.server.jobs.publish({"type": "story", "name": name})
             return self.send(200, {"ok": True})
+        m = re.fullmatch(r"/api/story/([\w-]+)/pick", path)
+        if m:   # shots mode: use this take of a shot (the page then re-joins with a render job)
+            name = slug(m.group(1))
+            sbp = os.path.join(OUT, "story", name, "storyboard.json")
+            if not os.path.exists(sbp):
+                return self.send(404, {"error": "no such storyboard"})
+            if self.server.jobs.busy(f"story/{name}"):
+                raise BadRequest("a job is working on this storyboard; wait for it first")
+            tag = "draft" if body.get("draft") else "full"
+            try:
+                shot, take = int(body.get("shot")), int(body.get("take"))
+            except (TypeError, ValueError):
+                raise BadRequest("shot and take must be numbers") from None
+            if not os.path.exists(os.path.join(OUT, "story", name, f"shots-{tag}", f"shot-{shot:02d}-t{take}.webm")):
+                raise BadRequest("no such take")
+            sb = json.load(open(sbp))
+            sb.setdefault("takes", {}).setdefault(tag, {}).setdefault(str(shot), {}).update(take=take, by="you")
+            with open(sbp + ".tmp", "w") as f:
+                json.dump(sb, f, indent=1)
+            os.replace(sbp + ".tmp", sbp)
+            self.server.jobs.publish({"type": "story", "name": name})
+            return self.send(200, {"ok": True})
         m = re.fullmatch(r"/api/story/([\w-]+)", path)
         if m:
             sb = body.get("storyboard")
             if not isinstance(sb, dict) or not isinstance(sb.get("keyframes"), list) \
                     or not isinstance(sb.get("segments"), list):
                 raise BadRequest("the storyboard needs 'keyframes' and 'segments' lists")
-            if len(sb["segments"]) != len(sb["keyframes"]) - 1:
+            if sb.get("kind") == "shots":
+                if not sb["keyframes"]:
+                    raise BadRequest("the storyboard needs at least one shot")
+                t = 0.0
+                for s in sb["keyframes"]:   # keep shot start times in step with edited lengths
+                    try:
+                        s["seconds"] = min(8.0, max(1.5, float(s.get("seconds") or 3)))
+                    except (TypeError, ValueError):
+                        raise BadRequest("a shot's length must be a number of seconds") from None
+                    s["t"] = round(t, 2)
+                    t += s["seconds"]
+            elif len(sb["segments"]) != len(sb["keyframes"]) - 1:
                 raise BadRequest("there must be one segment fewer than keyframes")
             p = os.path.join(OUT, "story", slug(m.group(1)), "storyboard.json")
             if not os.path.exists(p):

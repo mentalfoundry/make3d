@@ -193,10 +193,76 @@ Download the models once with `./setup.sh --video` (~26 GB in `models/ltx2/`).
 
 ```sh
 storyboard new knight-dragon "a knight fights a dragon on a cliff at sunset" --seconds 30
-storyboard frames knight-dragon --only 3,4      # redraw keyframes you don't like
-storyboard render knight-dragon --draft          # quick low-res pass to check the motion
+storyboard frames knight-dragon --only 3,4      # redraw shots whose first frame you don't like
+storyboard render knight-dragon --draft          # quick low-res pass, one take per shot
 storyboard render knight-dragon --music "epic orchestral battle music, drums, brass"
+storyboard pick knight-dragon 4 2                # use take 2 of shot 4, then render again (re-joins only)
 ```
+
+By default a storyboard is a **shot list cut together**, the way people who get good results
+from video models work. The older mode, one continuous take, is `--continuous` (below).
+
+1. **new:** the chat model plans 2–6 s shots, each sized to its story beat. It mixes
+   wides, mediums, close-ups, inserts, over-the-shoulders and reactions, and gives each shot
+   one action, one camera move and at most one speaker. The rules it follows:
+   - Shot 0 is a wide establishing shot.
+   - It cuts around what video models do badly: a hand-off becomes a lead-in, an insert
+     of the hands and a reaction.
+   - At most two people per shot.
+   - Screen direction stays consistent.
+   - A dialogue shot is at least 1 s plus 0.4 s per word.
+
+   `--seconds` is a target: a short story comes out shorter rather than padded. The cast
+   gets a short visual tag ("the man in the navy suit and round glasses") and a voice, and
+   the scene gets one **ambience** description.
+
+   Flux draws each shot's **first frame**, using reference sheets only for the people in
+   that shot plus shot 0 for the location. The vision model checks it against the
+   description, the head count and fused or doubled people, and redraws weak ones. You get
+   `storyboard.png` and **`<name>-animatic.webm`**: the frames held for each shot's length
+   with captions, so you can check the pacing before spending GPU time.
+2. **render:** each shot is rendered **on its own from its first frame** (no chaining, so
+   nothing drifts from shot to shot). The prompt follows LTX's guidance:
+   - main action first, then any spoken line in quotes with the speaker's voice, the camera
+     move, the sounds and the style;
+   - under 200 words;
+   - names replaced by the visual tags.
+
+   `--takes` (default 1 for `--draft`, 2 for full) renders several takes. The vision model
+   scores each for identity, motion and artefacts and uses the best. `storyboard pick` or
+   the portal's *Use this* button overrides it. Shots are trimmed to length and joined with
+   **hard cuts**. The ambience runs under the whole scene (`--ambience-db`, default 18 dB
+   below; `--no-ambience` to leave it out), with an optional `--music` bed. Unchanged takes,
+   the ambience and the music are reused, so changing one shot re-renders only that shot.
+
+Output in `out/story/<name>/`: `key-NN.png` (first frames), `storyboard.png`,
+`<name>-animatic.webm`, `shots-draft/` and `shots-full/` (every take), and
+`<name>-draft.webm`/`-full.webm` (+ `.ogv`, `.mp4`).
+
+Measured on the development laptop with "The GPU Handover" (15 shots, 50 s, two characters):
+- First frames took 1–1.5 min each, up to ~6 min when the check redraws one.
+- A draft render took 1.4–2.3 min per shot per take: **~33 min for one take of every shot**.
+- Full quality is roughly 2.5× that per take.
+- Re-joining after a pick, or after re-rendering one shot, reuses everything else (seconds
+  to ~2 min).
+
+What we learned building it, and what still goes wrong:
+- **Name only the people in the shot.** If a shot's text names someone who isn't in it
+  ("speaks to devman1" on a single), Flux draws them in and LTX cuts away to a new scene to
+  show them. The pipeline now rewrites such names as "someone off-screen".
+- **Location plate.** The location reference is an empty set (`location.png`), not a shot
+  with people in it. With a shot as reference, single-person frames came out with the same
+  person twice.
+- **People inside cars** wouldn't draw: Flux stood them on the pavement. The planner now shows
+  arrivals with tinted windows and door closes as inserts.
+- **Framing:** Flux still draws many "medium" shots full-length despite the framing text.
+- **Takes:** the vision model scores generously, but it caught a morphing take and frozen
+  takes. A shot where every take scored low is marked **WEAK**. Usually its first frame
+  contradicts its action ("stands still" vs "stops walking"); edit one of them.
+- **Dialogue:** LTX speaks the line in quotes with the right timing (Whisper heard it back);
+  unusual names get mispronounced, so spell them phonetically.
+
+### One continuous take: `--continuous`
 
 1. **new:** the chat model (Qwen) writes a shot list with a keyframe every `--every` seconds
    (default 5) plus one fixed description of the characters, setting and style. Keyframes
@@ -363,7 +429,8 @@ Then open `http://localhost:7870/` on this machine.
 - **Video from a prompt or a storyboard.** The Video page makes one clip from a prompt, or
   switch to *From a storyboard* to render one of your storyboards into a multi-shot scene.
   That tab shows its keyframes and warns about missing or WEAK ones, with the same render options
-  as the storyboard page (draft, keyframe strength, music bed, re-render segments).
+  as the storyboard page (shots mode: draft, takes, re-render shots, music bed, ambience;
+  continuous mode: draft, keyframe strength, re-render segments, music bed).
 - **Live updates.** The portal pushes job and storyboard changes to open pages over one
   server-sent-events connection (`/api/events`), so pages don't poll. The Jobs list, the job
   counter, the Library and storyboard pages update by themselves. Only a job's log is fetched
@@ -379,6 +446,12 @@ Then open `http://localhost:7870/` on this machine.
 
   *Undo redraw* swaps back to the previous version; pressing it again swaps forward. On the
   command line: `storyboard frames NAME --only 2 --note "..." [--adjust]`.
+
+  In shots mode each shot card also has its size, camera move, length, who's in it, the
+  first-frame description, the action, an optional spoken line (speaker and words) and its
+  sound. The scene's ambience is at the top. Once rendered, a card shows every take with its
+  score. The one in use is outlined, and *Use this* on another take switches to it and
+  re-joins the video (only the join runs, so it's quick). The animatic appears with the videos.
 - **Jobs** run one at a time because they share the GPU. They keep running if you close the
   browser, and their logs are kept in `out/portal/jobs/`. A job that was running when the
   portal restarted shows as *interrupted*.
@@ -423,6 +496,7 @@ If the service should keep running while you're logged out, run
 | `art3d.py` | system Python | Your art → posed concept → `make3d` (the `art3d` command) |
 | `makevideo.py` | system Python | Prompt/image → video with sound via `sd-cli` (the `makevideo` command) |
 | `storyboard.py` | system Python | Idea → shot list → keyframes → stitched long video (the `storyboard` command) |
+| `shots.py` | system Python | Shots mode for `storyboard`: shot-list planner, first frames with a location plate, animatic, per-shot takes ranked by the vision model, hard-cut assembly with ambience |
 | `makesound.py` | system Python | Music and sound effects via Lemonade (the `makesound` command) |
 | `portal.py` | system Python | Web portal for all of the above (the `portal` command; page in `portal/`) |
 | `lemon.py` | system Python | Calls Lemonade: Flux generate/edit, TRELLIS |

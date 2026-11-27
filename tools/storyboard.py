@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""Storyboard -> keyframes every N seconds -> long video stitched from LTX segments.
+"""Storyboard -> long video with sound.
 
+Default (shots mode, see shots.py): the chat model plans a shot list (2-6 s shots of mixed
+sizes, one action each, cut around what video models do badly); Flux draws each shot's first
+frame; an animatic shows the pacing; render makes each shot on its own from its first frame
+(takes ranked by the vision model) and joins them with hard cuts over one ambience track.
+
+--continuous (the older mode): one take with a keyframe every N seconds:
   1. new:     the chat model writes a shot list (one keyframe every --every seconds, each
               caught mid-movement) with one fixed description of the characters and
               setting. Flux draws keyframe 0, then the others using keyframe 0 as an
@@ -15,6 +21,10 @@
               music bed (ACE-Step).
 
 Examples:
+  storyboard new gpu "a <devman> is handed a GPU by a <techman> from a limo" --refs ~/chars
+  storyboard render gpu --draft                       # one take per shot, low res
+  storyboard render gpu --takes 3                     # full quality, best of three per shot
+  storyboard pick gpu 4 2                             # use take 2 of shot 4 instead
   storyboard new knight-dragon "a knight fights a dragon on a cliff at sunset" --seconds 30
   storyboard new duel "a <knight> fights a <dragon> in a ruined castle" --refs ~/chars
   storyboard frames duel --only 2 --note "camera lower, the dragon on the right"
@@ -35,6 +45,7 @@ sys.path.insert(0, TOOLS)
 import lemon  # noqa: E402
 import makevideo  # noqa: E402
 import ltx_dgl  # noqa: E402
+import shots  # noqa: E402
 
 FRAME_SIZE = "1152x768"   # Flux keyframes (3:2); video is rendered at the same shape
 PLAN = """You are a film storyboard artist. Plan a short continuous video of this idea:
@@ -177,7 +188,14 @@ def adjust_prompt(sb, i, n_refs, note):
             f"no watermark, no borders.")
 
 
+def is_shots(sb):
+    return sb.get("kind") == "shots"
+
+
 def draw_one(name, sb, i, seed, note="", adjust=False):
+    if is_shots(sb):
+        return shots.draw(sb, i, story_dir(name), seed, note=note,
+                          adjust_from=prev_path(name, i) if adjust else None)
     refs = ref_paths(name, sb)
     if adjust:   # edit the previous version of this keyframe
         return lemon.edit_image(adjust_prompt(sb, i, len(refs), note), refs + [prev_path(name, i)],
@@ -207,18 +225,20 @@ def draw_frames(name, sb, only=None, seed=None, tries=3, note="", adjust=False):
             sb.setdefault("prev_checks", {})[str(i)] = checks.get(str(i))
         if adjust and not os.path.exists(prev_path(name, i)):
             raise RuntimeError(f"keyframe {i} isn't drawn yet, so there is nothing to adjust")
-        for attempt in range(max(1, tries if i > 0 else 1)):
+        checked = tries > 1 and (i > 0 or is_shots(sb))
+        for attempt in range(max(1, tries) if checked else 1):
             png = draw_one(name, sb, i, seed + i + 1000 * attempt, note=note, adjust=adjust)
             open(frame_path(name, i), "wb").write(png)
-            if i == 0 or tries <= 1:
+            if not checked:
                 best = (0, "", True, png)
                 break
-            score, note, ok = check_frame(name, sb, i)
+            score, msg, ok = (shots.check(sb, i, frame_path(name, i), story_dir(name)) if is_shots(sb)
+                              else check_frame(name, sb, i))
             if best is None or score > best[0]:
-                best = (score, note, ok, png)
+                best = (score, msg, ok, png)
             if ok:
                 break
-            print(f"  key-{i:02d}.png  try {attempt + 1}: {note}; redrawing", flush=True)
+            print(f"  key-{i:02d}.png  try {attempt + 1}: {msg}; redrawing", flush=True)
         open(frame_path(name, i), "wb").write(best[3])
         checks[str(i)] = {"note": best[1], "ok": best[2]}
         flag = "" if best[2] else "  << WEAK: edit its text in storyboard.json and redraw"
@@ -226,6 +246,9 @@ def draw_frames(name, sb, only=None, seed=None, tries=3, note="", adjust=False):
               + (f"  {best[1]}" if best[1] else "") + flag, flush=True)
     save(name, sb)
     contact_sheet(name, sb)
+    if is_shots(sb):
+        shots.animatic(sb, story_dir(name), name, lambda k: frame_path(name, k),
+                       os.path.join(ROOT, "venv", "bin", "python"))
 
 
 def load_refs(idea, folder, out):
@@ -259,7 +282,7 @@ def contact_sheet(name, sb):
     if not all(os.path.exists(p) for p in paths):
         return
     checks = sb.get("checks", {})
-    labels = [f"{i}: t={kf['t']}s" + ("  WEAK" if not checks.get(str(i), {}).get("ok", True) else "")
+    labels = [f"{i}: t={kf['t']}s" + (f" {kf['size']} {kf['seconds']:g}s" if is_shots(sb) else "") + ("  WEAK" if not checks.get(str(i), {}).get("ok", True) else "")
               for i, kf in enumerate(sb["keyframes"])]
     script = """
 import sys
@@ -297,6 +320,8 @@ def cmd_new(a):
     if os.path.exists(os.path.join(out, "storyboard.json")) and not a.force:
         sys.exit(f"'{a.name}' already exists. Use: storyboard frames/render {a.name}, or --force to start over")
     os.makedirs(out, exist_ok=True)
+    if not a.continuous:
+        return new_shots(a, out)
     n = int(round(a.seconds / a.every))
     times = [i * a.every for i in range(n + 1)]
     refs, idea, fixed = [], a.idea, ""
@@ -338,6 +363,49 @@ def cmd_new(a):
           f"(~{n * 6} min on the development laptop)")
 
 
+def new_shots(a, out):
+    refs, idea = [], a.idea
+    if a.refs:
+        log(f"characters: reading reference images in {a.refs}")
+        refs = load_refs(a.idea, a.refs, out)
+        idea = re.sub(r"<([\w-]+)>", r"\1", a.idea)
+    log(f"plan: shot list for about {a.seconds:g} s")
+    sb = shots.plan(idea, a.seconds, refs, style=a.style)
+    if refs:
+        sb["refs"] = refs
+    sb.update({"idea": a.idea, "seed": a.seed, "every": 0})
+    save(a.name, sb)
+    total = sum(s["seconds"] for s in sb["keyframes"])
+    print(f"  {sb.get('title', '')}  ({len(sb['keyframes'])} shots, {total:g} s)")
+    for c in sb["cast"]:
+        print(f"  cast: {c['name']} = {c['tag']}; voice: {c['voice']}")
+    print(f"  setting: {sb['setting']}\n  ambience: {sb['ambience']}")
+    for i, s in enumerate(sb["keyframes"]):
+        line = f'  "{s["line"]["text"]}" ({s["line"].get("speaker")})' if s.get("line") else ""
+        print(f"  {i:>2} {s['t']:>5g}s {s['seconds']:>3g}s  {s['size']:<17} {s['camera']:<18} "
+              f"[{', '.join(s['who'])}] {s['action']}{line}")
+    log(f"first frames: drawing {len(sb['keyframes'])} with Flux (~40-70 s each, more if redrawn)")
+    draw_frames(a.name, sb, tries=a.tries)
+    print(f"\nWatch {out}/{a.name}-animatic.webm for pacing, edit storyboard.json if needed, then:\n"
+          f"  storyboard frames {a.name} --only N     # redraw a shot's first frame\n"
+          f"  storyboard render {a.name} --draft      # quick check, one take per shot\n"
+          f"  storyboard render {a.name}              # full quality, two takes per shot, best kept")
+
+
+def cmd_pick(a):
+    sb = load(a.name)
+    if not is_shots(sb):
+        sys.exit("takes only exist in shots mode")
+    tag = "draft" if a.draft else "full"
+    if not 0 <= a.shot < len(sb["keyframes"]):
+        sys.exit(f"there is no shot {a.shot}")
+    if not os.path.exists(os.path.join(story_dir(a.name), f"shots-{tag}", f"shot-{a.shot:02d}-t{a.take - 1}.webm")):
+        sys.exit(f"shot {a.shot} has no {tag} take {a.take}")
+    sb.setdefault("takes", {}).setdefault(tag, {}).setdefault(str(a.shot), {}).update(take=a.take - 1, by="you")
+    save(a.name, sb)
+    print(f"shot {a.shot}: using take {a.take}. Run: storyboard render {a.name}{' --draft' if a.draft else ''} (only re-joins)")
+
+
 def cmd_frames(a):
     sb = load(a.name)
     only = {int(v) for v in a.only.split(",")} if a.only else None
@@ -369,6 +437,8 @@ def cmd_render(a):
     classic (--classic): each segment is pinned to its start and end keyframes."""
     sb = load(a.name)
     out = story_dir(a.name)
+    if is_shots(sb):
+        return shots.render(a.name, out, lambda k: frame_path(a.name, k), load, save, a, log)
     n = len(sb["segments"])
     for i in range(n + 1):
         if not os.path.exists(frame_path(a.name, i)):
@@ -493,6 +563,9 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--force", action="store_true", help="replace an existing storyboard")
     p.add_argument("--tries", type=int, default=3, help="redraws per keyframe if the check fails (1 = no check)")
+    p.add_argument("--continuous", action="store_true",
+                   help="plan one continuous take with a keyframe every --every seconds (the old mode) "
+                        "instead of a shot list")
     p = sub.add_parser("frames", help="redraw keyframes")
     p.add_argument("name")
     p.add_argument("--only", help="comma-separated keyframe numbers, e.g. 3,4 (default: all)")
@@ -508,13 +581,23 @@ def main():
     p.add_argument("--music", help="add a music bed: style text for ACE-Step")
     p.add_argument("--music-db", type=float, default=14, help="how far below the scene sound the music sits (dB, default 14)")
     p.add_argument("--fps", type=int, default=24)
+    p.add_argument("--takes", type=int, help="shots mode: takes per shot, the vision model keeps the best "
+                                             "(default: 1 for --draft, 2 for full)")
+    p.add_argument("--no-ambience", action="store_true", help="shots mode: no background ambience track")
+    p.add_argument("--ambience-db", type=float, default=18,
+                   help="shots mode: how far below the shots' own sound the ambience sits (dB, default 18)")
     p.add_argument("--classic", action="store_true",
                    help="pin every segment to its start and end keyframes (old mode; no DGL needed)")
     p.add_argument("--end-strength", type=float, default=0.4,
                    help="continuous mode: how firmly each segment must land on its next keyframe "
                         "(1 = exactly, lower = looser, smoother; default 0.4. Above ~0.6 segments tend to rush to the keyframe and then hold still)")
+    p = sub.add_parser("pick", help="shots mode: choose which take of a shot to use")
+    p.add_argument("name")
+    p.add_argument("shot", type=int)
+    p.add_argument("take", type=int, help="take number, from 1")
+    p.add_argument("--draft", action="store_true", help="pick among the draft takes")
     a = ap.parse_args()
-    {"new": cmd_new, "frames": cmd_frames, "render": cmd_render}[a.cmd](a)
+    {"new": cmd_new, "frames": cmd_frames, "render": cmd_render, "pick": cmd_pick}[a.cmd](a)
 
 
 if __name__ == "__main__":
