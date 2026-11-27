@@ -304,7 +304,8 @@ for src, dst, cap in zip(a[0::3], a[1::3], a[2::3]):
         f.write(f"file '{len(shots) - 1:02d}.png'\n")   # concat needs the last one twice
     out = os.path.join(story_dir, f"{name}-animatic.webm")
     r = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0",
-                        "-i", lst, "-vf", "fps=12,format=yuv420p", "-c:v", "libvpx", "-b:v", "1M", out],
+                        "-i", lst, "-vf", "fps=12,format=yuv420p", "-t", f"{sum(s['seconds'] for s in shots):g}",
+                        "-c:v", "libvpx", "-b:v", "1M", out],
                        capture_output=True, text=True)
     shutil.rmtree(tmp, ignore_errors=True)
     if r.returncode != 0:

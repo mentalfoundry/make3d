@@ -482,7 +482,7 @@ function rankFiles(files) {
   const score = f => {
     const n = f.name.toLowerCase();
     if (n.endsWith(".glb") && n !== "raw.glb") return 0;
-    if (n.endsWith(".webm") || n.endsWith(".mp4")) return 1;
+    if (n.endsWith(".webm") || n.endsWith(".mp4")) return n.includes("-animatic.") ? 1.5 : 1;   // the animatic is stills
     if (n.endsWith(".ogg") || n.endsWith(".wav")) return 2;
     if (n === "preview.png" || n === "storyboard.png" || n === "pose-options.png") return 3;
     return 5;
@@ -705,8 +705,12 @@ async function storyPage(name) {
   const segs = sb.segments.map((s, i) => `<div class="seg stack"><b>Segment ${i} · ${s.from}–${s.to}s</b>
       <label>Action<textarea data-seg="${i}" data-f="action">${esc(s.action)}</textarea></label>
       <label>Sound<textarea data-seg="${i}" data-f="sound">${esc(s.sound || "")}</textarea></label></div>`).join("");
-  const vidsHtml = () => rankFiles(info.videos.filter(f => !f.endsWith(".ogv")).map(n => ({ name: n })))
-    .map(f => mediaHtml(`story/${name}/${f.name}`, f.name)).join("");
+  // Rendered films first (full, then draft); the animatic (stills, for timing) last and labelled
+  const vidRank = f => /-full\./.test(f) ? 0 : /-draft\./.test(f) ? 1 : /-animatic\./.test(f) ? 3 : 2;
+  const vidsHtml = () => info.videos.filter(f => !f.endsWith(".ogv")).sort((a, b) => vidRank(a) - vidRank(b) || a.localeCompare(b))
+    .map(f => mediaHtml(`story/${name}/${f}`, f).replace(`<span>${esc(f)}</span>`, `<span>${esc(f)}${
+      /-animatic\./.test(f) ? " · <b>animatic</b>: each shot's first frame held for its length (stills, to check timing)"
+      : /-draft\./.test(f) ? " · <b>draft render</b> (low resolution)" : /-full\./.test(f) ? " · <b>full render</b>" : ""}</span>`)).join("");
   main.innerHTML = `<div class="stack">
     <div class="row spread"><p class="small" style="margin:0"><a href="#story">Storyboards</a> / <b>${esc(name)}</b> · <a href="#library/story/${encodeURIComponent(name)}">all files</a></p>
       ${itemButtons(`story/${name}`, name)}</div>
